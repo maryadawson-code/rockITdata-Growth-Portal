@@ -4,7 +4,7 @@ rockITdata AI Portal - Main Application
 A secure, role-based AI assistant portal for federal proposal development.
 
 Author: rockITdata LLC
-Version: 7.3 (Phase 1B - HubSpot Integration)
+Version: 7.3 - Phase 1B: Full Integration
 """
 
 import streamlit as st
@@ -14,37 +14,34 @@ from typing import Optional
 import os
 
 # =============================================================================
-# HUBSPOT INTEGRATION (Phase 1B)
+# SAFE MODULE IMPORTS
 # =============================================================================
 
+# Try to import optional modules (graceful degradation if not present)
 try:
-    from hubspot_dashboard import render_hubspot_dashboard, init_hubspot_state
+    from pipeline_view import show_pipeline
+    PIPELINE_AVAILABLE = True
+except ImportError:
+    PIPELINE_AVAILABLE = False
+
+try:
+    from admin_dashboard import show_admin_dashboard
+    ADMIN_DASHBOARD_AVAILABLE = True
+except ImportError:
+    ADMIN_DASHBOARD_AVAILABLE = False
+
+try:
+    from hubspot_dashboard import show_hubspot_dashboard
     HUBSPOT_AVAILABLE = True
 except ImportError:
     HUBSPOT_AVAILABLE = False
-    def render_hubspot_dashboard():
-        st.error("⚠️ HubSpot module not found. Ensure `hubspot_dashboard.py` is in your project.")
-    def init_hubspot_state():
-        pass
-
-# =============================================================================
-# ADMIN DASHBOARD
-# =============================================================================
 
 try:
-    from admin_dashboard import render_admin_dashboard, init_admin_state
-    from database import initialize as init_db, log_token_usage
-    ADMIN_AVAILABLE = True
+    from database import init_database, log_audit_event, track_token_usage
+    DATABASE_AVAILABLE = True
 except ImportError:
-    ADMIN_AVAILABLE = False
-    def render_admin_dashboard():
-        st.error("⚠️ Admin module not found. Ensure `admin_dashboard.py` and `database.py` are in your project.")
-    def init_admin_state():
-        pass
-    def init_db():
-        pass
-    def log_token_usage(*args, **kwargs):
-        pass
+    DATABASE_AVAILABLE = False
+
 
 # =============================================================================
 # CONFIGURATION
@@ -73,6 +70,77 @@ COLORS = {
     "green": "#10B981",
     "violet": "#8B5CF6",
     "orange": "#F97316",
+}
+
+
+# =============================================================================
+# ROLE DEFINITIONS
+# =============================================================================
+
+ROLES = {
+    "admin": {
+        "name": "Administrator",
+        "can_access_private": True,
+        "can_access_admin": True,
+        "can_access_pipeline": True,
+        "can_access_hubspot": True,
+    },
+    "ceo": {
+        "name": "CEO",
+        "can_access_private": True,
+        "can_access_admin": True,
+        "can_access_pipeline": True,
+        "can_access_hubspot": True,
+    },
+    "coo": {
+        "name": "COO",
+        "can_access_private": True,
+        "can_access_admin": False,
+        "can_access_pipeline": True,
+        "can_access_hubspot": True,
+    },
+    "capture_lead": {
+        "name": "Capture Lead",
+        "can_access_private": True,
+        "can_access_admin": False,
+        "can_access_pipeline": True,
+        "can_access_hubspot": True,
+    },
+    "proposal_manager": {
+        "name": "Proposal Manager",
+        "can_access_private": False,
+        "can_access_admin": False,
+        "can_access_pipeline": True,
+        "can_access_hubspot": False,
+    },
+    "solution_architect": {
+        "name": "Solution Architect",
+        "can_access_private": False,
+        "can_access_admin": False,
+        "can_access_pipeline": True,
+        "can_access_hubspot": False,
+    },
+    "writer": {
+        "name": "Proposal Writer",
+        "can_access_private": False,
+        "can_access_admin": False,
+        "can_access_pipeline": False,
+        "can_access_hubspot": False,
+    },
+    "reviewer": {
+        "name": "Reviewer",
+        "can_access_private": False,
+        "can_access_admin": False,
+        "can_access_pipeline": False,
+        "can_access_hubspot": False,
+    },
+    "partner": {
+        "name": "Teaming Partner",
+        "can_access_private": False,
+        "can_access_admin": False,
+        "can_access_pipeline": False,
+        "can_access_hubspot": False,
+    },
 }
 
 
@@ -124,7 +192,11 @@ Your expertise includes:
 - Aligning responses with evaluation criteria
 - Using Shipley methodology for proposal development
 
-Always structure responses with clear headings, bullet points for requirements, and action items. Reference specific solicitation sections when applicable.""",
+Always structure responses with clear headings, bullet points for requirements, and action items. Reference specific solicitation sections when applicable.
+
+IMPORTANT: End every response with:
+---
+*AI GENERATED - REQUIRES HUMAN REVIEW*""",
         starters=[
             StarterPrompt(
                 title="Draft Executive Summary",
@@ -133,228 +205,251 @@ Always structure responses with clear headings, bullet points for requirements, 
                 icon="✨"
             ),
             StarterPrompt(
-                title="Create Compliance Matrix",
-                description="Build L/M crosswalk from solicitation requirements",
-                prompt_template="Analyze this PWS and create a compliance matrix mapping each requirement to our proposed response sections:\n\n[PASTE PWS TEXT OR UPLOAD FILE]",
-                icon="✅"
+                title="Analyze PWS Requirements",
+                description="Break down a PWS into actionable requirements",
+                prompt_template="Please analyze this PWS and create a requirements matrix:\n\n[PASTE PWS TEXT HERE]",
+                icon="🔍"
             ),
             StarterPrompt(
-                title="Analyze PWS/SOW",
-                description="Extract requirements, evaluation criteria, and hidden risks",
-                prompt_template="Shred this PWS and identify:\n1. Mandatory requirements (shall statements)\n2. Evaluation criteria from Section M\n3. Potential risks or ambiguities\n\n[PASTE PWS TEXT OR UPLOAD FILE]",
+                title="Write Technical Approach",
+                description="Draft a technical approach section",
+                prompt_template="Help me write the technical approach for [TASK AREA]. Key requirements include:\n\n- ",
+                icon="📋"
+            ),
+            StarterPrompt(
+                title="Create Win Themes",
+                description="Develop compelling win themes for your proposal",
+                prompt_template="Help me develop 3-5 win themes for [CONTRACT NAME] against incumbent [INCUMBENT NAME]. Our strengths are:\n\n",
                 icon="🎯"
             ),
         ]
     ),
-    
     "compliance_checker": BotConfig(
         id="compliance_checker",
         name="Compliance Checker",
         icon="🛡️",
-        tagline="Never miss a requirement again",
-        description="I validate your proposal against Section L/M, FAR/DFAR clauses, and agency-specific requirements.",
+        tagline="Ensure your proposals meet every requirement",
+        description="I review your proposal content against RFP requirements to identify gaps and ensure compliance with Section L/M criteria.",
         color="green",
-        system_prompt="""You are a compliance specialist for federal proposals at rockITdata. Your role is to ensure proposals meet all requirements.
+        system_prompt="""You are a compliance expert for federal proposals at rockITdata. Your role is to ensure proposals meet all RFP requirements.
 
 Your expertise includes:
-- Validating proposals against Section L (Instructions) and Section M (Evaluation Criteria)
-- Checking FAR/DFAR clause compliance
-- Verifying format requirements (page limits, fonts, margins)
-- Ensuring all attachments and certifications are complete
-- Identifying gaps between requirements and proposal responses
+- Reviewing Section L (instructions) and Section M (evaluation criteria)
+- Creating compliance matrices
+- Identifying missing requirements or gaps
+- Checking for proper response formatting
+- Verifying page limits and submission requirements
+- Ensuring FAR/DFARS compliance for SDVOSB/WOSB contracts
 
-Be thorough and specific. Flag issues with severity levels (Critical, Major, Minor). Provide specific remediation steps.""",
+When reviewing content, always:
+1. Quote the specific requirement
+2. Assess compliance status (Compliant/Partial/Non-Compliant/Missing)
+3. Provide specific recommendations for gaps
+
+Use a structured format with clear compliance ratings.
+
+IMPORTANT: End every response with:
+---
+*AI GENERATED - REQUIRES HUMAN REVIEW*""",
         starters=[
             StarterPrompt(
-                title="Validate Section L/M",
-                description="Check proposal against instructions and evaluation criteria",
-                prompt_template="Review my proposal draft against these Section L/M requirements and identify any gaps or non-compliant sections:\n\nSection L Requirements:\n[PASTE HERE]\n\nMy Draft:\n[PASTE HERE]",
-                icon="✅"
-            ),
-            StarterPrompt(
-                title="FAR/DFAR Compliance",
-                description="Verify regulatory clause compliance",
-                prompt_template="Check this proposal section for compliance with the following FAR/DFAR clauses:\n\nClauses: [LIST CLAUSE NUMBERS]\n\nProposal Section:\n[PASTE HERE]",
-                icon="🛡️"
-            ),
-            StarterPrompt(
-                title="Pre-Submission Checklist",
-                description="Final review before you hit submit",
-                prompt_template="Run a final compliance checklist for this submission:\n\nSolicitation: [NAME/NUMBER]\nPage Limit: [X pages]\nFormat Requirements: [FONT, MARGINS, etc.]\n\nPlease verify: page limits, font requirements, volume structure, required attachments, and certifications.",
+                title="Check Section L Compliance",
+                description="Verify your response meets submission requirements",
+                prompt_template="Please check this section against Section L requirements:\n\nSECTION L REQUIREMENTS:\n[PASTE REQUIREMENTS]\n\nOUR RESPONSE:\n[PASTE RESPONSE]",
                 icon="📋"
             ),
-        ]
-    ),
-    
-    "win_theme_generator": BotConfig(
-        id="win_theme_generator",
-        name="Win Theme Generator",
-        icon="🎯",
-        tagline="Turn differentiators into winning messages",
-        description="I craft compelling win themes, discriminators, and proof points that resonate with evaluators.",
-        color="violet",
-        system_prompt="""You are a capture strategist specializing in win theme development for rockITdata federal proposals.
-
-Your expertise includes:
-- Identifying and articulating key differentiators
-- Creating competitor ghost profiles
-- Developing evaluator-focused win themes
-- Crafting proof points with quantified benefits
-- Aligning themes with customer hot buttons
-
-Structure win themes as: Feature → Benefit → Proof Point. Make themes specific, measurable, and evaluator-focused.""",
-        starters=[
             StarterPrompt(
-                title="Extract Differentiators",
-                description="Identify what makes your solution unique",
-                prompt_template="Based on our capabilities, identify 5 key differentiators for this opportunity:\n\nOpportunity: [AGENCY/CONTRACT NAME]\nIncumbent: [IF KNOWN]\nOur Strengths:\n1. \n2. \n3. ",
-                icon="✨"
-            ),
-            StarterPrompt(
-                title="Build Ghost Competitors",
-                description="Anticipate competitor positioning",
-                prompt_template="Create ghost competitor profiles and predict their likely win themes and weaknesses:\n\nCompetitors to analyze:\n1. [COMPANY NAME]\n2. [COMPANY NAME]\n\nOpportunity Context: [BRIEF DESCRIPTION]",
-                icon="👻"
-            ),
-            StarterPrompt(
-                title="Craft Win Themes",
-                description="Create evaluator-focused messaging",
-                prompt_template="Generate 3 win themes that align our strengths with the customer's priorities:\n\nCustomer Hot Buttons:\n1. \n2. \n\nOur Key Strengths:\n1. \n2. ",
-                icon="⚡"
-            ),
-        ]
-    ),
-    
-    "black_hat": BotConfig(
-        id="black_hat",
-        name="Black Hat Reviewer",
-        icon="🎭",
-        tagline="See your proposal through the evaluator's eyes",
-        description="I simulate a harsh government evaluator to find weaknesses before submission.",
-        color="red",
-        is_private=True,
-        system_prompt="""You are a skeptical government evaluator conducting a Black Hat review of proposals for rockITdata.
-
-Your role is to:
-- Critique proposals harshly but constructively
-- Identify unsupported claims and vague language
-- Find gaps in compliance with evaluation criteria
-- Score sections against Section M criteria
-- Predict competitor advantages
-
-Be direct and specific. Rate issues by severity. Provide concrete recommendations for improvement. Do not sugarcoat - the goal is to find weaknesses before the real evaluators do.""",
-        starters=[
-            StarterPrompt(
-                title="Simulate Evaluator Critique",
-                description="Red team your proposal section",
-                prompt_template="Act as a skeptical government evaluator. Review this section and identify:\n- Weaknesses and gaps\n- Unsupported claims\n- Areas that would score poorly\n\n[PASTE PROPOSAL SECTION]",
+                title="Gap Analysis",
+                description="Identify missing requirements in your draft",
+                prompt_template="Perform a gap analysis on this draft against these requirements:\n\nREQUIREMENTS:\n[PASTE REQUIREMENTS]\n\nDRAFT:\n[PASTE DRAFT]",
                 icon="🔍"
             ),
             StarterPrompt(
-                title="Score Against Criteria",
-                description="Predict your evaluation score",
-                prompt_template="Score this proposal section against the evaluation criteria. Justify each rating and suggest improvements:\n\nEvaluation Criteria (from Section M):\n[PASTE CRITERIA]\n\nProposal Section:\n[PASTE SECTION]",
+                title="Create Compliance Matrix",
+                description="Build a compliance matrix from RFP sections",
+                prompt_template="Create a compliance matrix from this RFP section:\n\n[PASTE RFP TEXT]",
                 icon="📊"
-            ),
-            StarterPrompt(
-                title="Find Weaknesses",
-                description="Identify vulnerabilities competitors will exploit",
-                prompt_template="Analyze our proposal for weaknesses a competitor could exploit in their proposal. What are we missing? What claims are unsupported?\n\n[PASTE PROPOSAL OR KEY SECTIONS]",
-                icon="⚠️"
             ),
         ]
     ),
-    
+    "win_theme_generator": BotConfig(
+        id="win_theme_generator",
+        name="Win Theme Generator",
+        icon="🏆",
+        tagline="Craft compelling discriminators that win",
+        description="I help you develop powerful win themes and discriminators based on your competitive analysis and customer insights.",
+        color="orange",
+        system_prompt="""You are a capture strategist specializing in win theme development for federal proposals at rockITdata.
+
+Your expertise includes:
+- Developing compelling discriminators
+- Creating customer-focused benefit statements
+- Competitive positioning (Gold Team strategies)
+- Ghost competitor analysis
+- Price-to-win strategies
+- SDVOSB/WOSB competitive advantages
+
+Win Theme Framework:
+1. FEATURE: What we offer
+2. BENEFIT: Why it matters to the customer
+3. PROOF: Evidence/past performance
+
+Always make themes specific, measurable, and customer-outcome focused.
+
+IMPORTANT: End every response with:
+---
+*AI GENERATED - REQUIRES HUMAN REVIEW*""",
+        starters=[
+            StarterPrompt(
+                title="Develop Win Themes",
+                description="Create 3-5 powerful win themes",
+                prompt_template="Help me develop win themes for:\n\nContract: [NAME]\nCustomer: [AGENCY]\nIncumbent: [NAME]\nOur Strengths:\n- \n- \n-",
+                icon="🎯"
+            ),
+            StarterPrompt(
+                title="Ghost the Competition",
+                description="Develop competitive positioning strategies",
+                prompt_template="Help me ghost [COMPETITOR] for this opportunity. Their weaknesses are:\n\n1. \n2. \n3. ",
+                icon="👻"
+            ),
+            StarterPrompt(
+                title="Price-to-Win Analysis",
+                description="Develop pricing strategy themes",
+                prompt_template="Help me develop price-to-win themes for [CONTRACT]. Budget is approximately $[AMOUNT]. Incumbent is charging approximately $[AMOUNT].",
+                icon="💰"
+            ),
+        ]
+    ),
     "strategy_coach": BotConfig(
         id="strategy_coach",
         name="Strategy Coach",
-        icon="🧠",
-        tagline="Make smarter capture decisions",
-        description="I help with bid/no-bid analysis, capture planning, competitive positioning, and teaming strategies.",
-        color="orange",
-        is_private=True,
-        system_prompt="""You are a senior capture manager and strategy coach for rockITdata federal pursuits.
+        icon="🎓",
+        tagline="Executive-level capture guidance",
+        description="I provide strategic capture management advice, BD pipeline analysis, and Go/No-Go recommendations.",
+        color="violet",
+        system_prompt="""You are a senior capture management advisor for rockITdata executives (CEO, COO, Capture Leads).
 
 Your expertise includes:
-- Bid/no-bid decision analysis with PWin scoring
-- Capture planning and milestone development
-- Competitive positioning and teaming strategies
-- Customer relationship assessment
-- Price-to-win analysis
+- Capture management best practices (Shipley methodology)
+- BD pipeline health assessment
+- Go/No-Go decision frameworks
+- Resource allocation strategies
+- Win probability (pWin) assessment
+- Teaming and subcontracting strategies
+- SDVOSB/WOSB mentor-protégé opportunities
 
-Use data-driven frameworks. Provide specific recommendations with rationale. Consider rockITdata's SDVOSB/WOSB certifications and healthcare IT focus in all analyses.""",
+Always provide strategic, executive-level guidance with clear recommendations and risk assessments.
+
+Shipley Gate Process:
+- Gate 1: Opportunity Qualification
+- Blue Team: Strategy Review
+- Kickoff: 48hr from RFP release
+- Pink Team: 30% compliance review
+- Red Team: 70% quality review
+- Gold Team: 90% final review
+- White Glove: Production/submission
+
+IMPORTANT: End every response with:
+---
+*AI GENERATED - REQUIRES HUMAN REVIEW*""",
         starters=[
             StarterPrompt(
-                title="Bid/No-Bid Analysis",
-                description="Evaluate opportunity fit and win probability",
-                prompt_template="Help me evaluate this opportunity for a bid/no-bid decision:\n\nOpportunity: [NAME/NUMBER]\nAgency: [AGENCY]\nContract Value: $[VALUE]\nOur PWin Factors:\n- Customer Relationship: [1-5]\n- Technical Fit: [1-5]\n- Past Performance: [1-5]\n- Price Competitiveness: [1-5]",
-                icon="🎲"
+                title="Go/No-Go Analysis",
+                description="Evaluate an opportunity for pursuit",
+                prompt_template="Help me evaluate Go/No-Go for:\n\nOpportunity: [NAME]\nAgency: [AGENCY]\nValue: $[AMOUNT]\nIncumbent: [NAME]\nOur relevant experience:\n- ",
+                icon="🚦"
             ),
             StarterPrompt(
-                title="Capture Planning",
-                description="Build a winning capture strategy",
-                prompt_template="Help me develop a capture plan for:\n\nOpportunity: [NAME]\nRFP Release Date: [DATE]\nProposal Due: [DATE]\n\nWhat should our capture milestones and actions be?",
-                icon="📅"
+                title="pWin Assessment",
+                description="Calculate probability of win",
+                prompt_template="Assess our pWin for [CONTRACT]:\n\nPositives:\n- \n- \n\nChallenges:\n- \n- \n\nCompetitor strengths:\n- ",
+                icon="📈"
             ),
             StarterPrompt(
                 title="Teaming Strategy",
-                description="Identify optimal teaming partners",
-                prompt_template="Recommend teaming partners for this opportunity:\n\nOpportunity Requirements:\n- [KEY REQUIREMENT 1]\n- [KEY REQUIREMENT 2]\n\nOur Gaps:\n- [GAP 1]\n- [GAP 2]\n\nKnown Competitors: [LIST]",
+                description="Develop optimal teaming approach",
+                prompt_template="Help me develop a teaming strategy for [CONTRACT]. We need partners with:\n\n1. \n2. \n3. ",
                 icon="🤝"
             ),
-        ]
+        ],
+        is_private=True
+    ),
+    "black_hat_reviewer": BotConfig(
+        id="black_hat_reviewer",
+        name="Black Hat Reviewer",
+        icon="🎩",
+        tagline="See your proposal through competitor eyes",
+        description="I review your proposal from a competitor's perspective, identifying vulnerabilities and counter-strategies.",
+        color="gray",
+        system_prompt="""You are a Black Hat reviewer simulating how competitors would evaluate and attack rockITdata's proposal.
+
+Your role is to:
+- Identify proposal weaknesses competitors will exploit
+- Predict competitor discriminators and win themes
+- Find gaps in technical approaches
+- Assess price vulnerability
+- Recommend defensive strategies
+
+Be brutally honest but constructive. Your goal is to help the team strengthen the proposal before submission.
+
+Framework:
+1. VULNERABILITY: What weakness exists
+2. COMPETITOR EXPLOIT: How they'll attack it
+3. MITIGATION: How to address it
+
+IMPORTANT: End every response with:
+---
+*AI GENERATED - REQUIRES HUMAN REVIEW*""",
+        starters=[
+            StarterPrompt(
+                title="Black Hat Review",
+                description="Review proposal from competitor perspective",
+                prompt_template="Perform a Black Hat review of this section:\n\n[PASTE PROPOSAL SECTION]\n\nKnown competitors: [LIST COMPETITORS]",
+                icon="🔍"
+            ),
+            StarterPrompt(
+                title="Competitor Win Themes",
+                description="Predict competitor strategies",
+                prompt_template="Predict win themes for [COMPETITOR] on [CONTRACT]. Their known strengths are:\n\n- \n- ",
+                icon="🎯"
+            ),
+            StarterPrompt(
+                title="Defense Strategy",
+                description="Develop counter-strategies",
+                prompt_template="Help me develop defensive strategies against [COMPETITOR]. They will likely attack us on:\n\n1. \n2. ",
+                icon="🛡️"
+            ),
+        ],
+        is_private=True
     ),
 }
 
 
 # =============================================================================
-# USER ROLES
-# =============================================================================
-
-ROLES = {
-    "admin": {"name": "Admin", "can_access_private": True, "can_access_integrations": True},
-    "capture_lead": {"name": "Capture Lead", "can_access_private": True, "can_access_integrations": True},
-    "proposal_manager": {"name": "Proposal Manager", "can_access_private": False, "can_access_integrations": False},
-    "analyst": {"name": "Analyst", "can_access_private": False, "can_access_integrations": False},
-    "standard": {"name": "Standard User", "can_access_private": False, "can_access_integrations": False},
-}
-
-
-# =============================================================================
-# PAGE CONFIG & STYLING
+# PAGE CONFIGURATION
 # =============================================================================
 
 def configure_page() -> None:
-    """Configure Streamlit page settings and inject custom CSS."""
+    """Configure the Streamlit page settings and styling."""
     st.set_page_config(
         page_title="rockITdata AI Portal",
         page_icon="🚀",
-        layout="centered",
+        layout="wide",
         initial_sidebar_state="expanded"
     )
     
-    # Inject custom CSS
+    # Custom CSS
     st.markdown(f"""
         <style>
-            /* ===== ROOT VARIABLES ===== */
-            :root {{
-                --rockit-red: {ROCKIT_RED};
-                --rockit-red-light: {ROCKIT_RED_LIGHT};
+            /* ===== GLOBAL STYLES ===== */
+            .stApp {{
+                background-color: {COLORS['background']};
             }}
             
-            /* ===== HIDE STREAMLIT DEFAULTS ===== */
-            #MainMenu {{visibility: hidden;}}
-            footer {{visibility: hidden;}}
-            header {{visibility: hidden;}}
-            
-            /* ===== SIDEBAR STYLING ===== */
+            /* ===== SIDEBAR ===== */
             [data-testid="stSidebar"] {{
                 background-color: {COLORS['surface']};
                 border-right: 1px solid {COLORS['border']};
-            }}
-            
-            [data-testid="stSidebar"] .block-container {{
-                padding-top: 2rem;
             }}
             
             /* ===== PORTAL HEADER ===== */
@@ -362,8 +457,8 @@ def configure_page() -> None:
                 display: flex;
                 align-items: center;
                 gap: 12px;
-                padding: 8px 0 16px 0;
-                margin-bottom: 8px;
+                padding: 16px 0;
+                margin-bottom: 16px;
             }}
             
             .portal-logo {{
@@ -371,31 +466,56 @@ def configure_page() -> None:
             }}
             
             .portal-title {{
-                font-weight: 700;
                 font-size: 1.25rem;
-                color: {ROCKIT_RED};
+                font-weight: 700;
+                color: {COLORS['primary']};
                 margin: 0;
-                line-height: 1.2;
             }}
             
             .portal-badge {{
-                background: {COLORS['primary_light']};
-                color: {ROCKIT_RED};
-                padding: 2px 8px;
-                border-radius: 4px;
+                background: {COLORS['primary']};
+                color: white;
+                padding: 4px 10px;
+                border-radius: 6px;
                 font-size: 0.7rem;
                 font-weight: 600;
                 text-transform: uppercase;
                 letter-spacing: 0.5px;
             }}
             
-            /* ===== ZERO STATE ===== */
-            .zero-state-container {{
-                text-align: center;
-                padding: 40px 20px;
+            .version-badge {{
+                background: {COLORS['surface_alt']};
+                color: {COLORS['text_secondary']};
+                padding: 2px 8px;
+                border-radius: 4px;
+                font-size: 0.65rem;
+                font-weight: 500;
             }}
             
-            .bot-icon-large {{
+            /* ===== NAV SECTION ===== */
+            .nav-section {{
+                margin-top: 16px;
+                padding-top: 16px;
+                border-top: 1px solid {COLORS['border']};
+            }}
+            
+            .nav-section-title {{
+                font-size: 0.75rem;
+                font-weight: 600;
+                color: {COLORS['text_muted']};
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                margin-bottom: 8px;
+            }}
+            
+            /* ===== BOT CARD (Zero State) ===== */
+            .bot-header {{
+                text-align: center;
+                padding: 40px 20px;
+                margin-bottom: 24px;
+            }}
+            
+            .bot-icon {{
                 font-size: 4rem;
                 margin-bottom: 16px;
             }}
@@ -404,121 +524,106 @@ def configure_page() -> None:
                 font-size: 1.75rem;
                 font-weight: 700;
                 color: {COLORS['text_primary']};
-                margin-bottom: 8px;
-            }}
-            
-            .private-badge {{
-                background: {COLORS['warning']};
-                color: white;
-                padding: 2px 8px;
-                border-radius: 4px;
-                font-size: 0.7rem;
-                font-weight: 600;
-                margin-left: 8px;
+                margin: 0 0 8px 0;
             }}
             
             .bot-tagline {{
-                font-size: 1rem;
+                font-size: 1.1rem;
                 color: {COLORS['text_secondary']};
-                margin-bottom: 8px;
+                margin: 0 0 16px 0;
             }}
-            
-            .bot-tagline.blue {{ color: {COLORS['blue']}; }}
-            .bot-tagline.green {{ color: {COLORS['green']}; }}
-            .bot-tagline.violet {{ color: {COLORS['violet']}; }}
-            .bot-tagline.orange {{ color: {COLORS['orange']}; }}
-            .bot-tagline.red {{ color: {ROCKIT_RED}; }}
             
             .bot-description {{
                 color: {COLORS['text_secondary']};
                 max-width: 500px;
-                margin: 0 auto 24px auto;
+                margin: 0 auto;
                 line-height: 1.6;
             }}
             
-            /* ===== QUICK START SECTION ===== */
-            .quick-start-label {{
-                display: flex;
-                align-items: center;
-                gap: 8px;
+            /* ===== STARTER CARDS ===== */
+            .starter-grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                gap: 16px;
+                max-width: 800px;
+                margin: 0 auto;
+                padding: 0 20px;
+            }}
+            
+            .starter-card {{
+                background: {COLORS['surface']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 12px;
+                padding: 20px;
+                cursor: pointer;
+                transition: all 0.2s ease;
+            }}
+            
+            .starter-card:hover {{
+                border-color: {COLORS['primary']};
+                box-shadow: 0 4px 12px rgba(153, 0, 0, 0.1);
+                transform: translateY(-2px);
+            }}
+            
+            .starter-icon {{
+                font-size: 1.5rem;
+                margin-bottom: 8px;
+            }}
+            
+            .starter-title {{
                 font-weight: 600;
                 color: {COLORS['text_primary']};
-                margin: 24px 0 16px 0;
-                justify-content: center;
+                margin: 0 0 4px 0;
             }}
             
-            .keyboard-hint {{
-                text-align: center;
-                color: {COLORS['text_muted']};
-                font-size: 0.85rem;
-                margin-top: 24px;
-            }}
-            
-            /* ===== STARTER CARDS ===== */
-            .stButton > button {{
-                border: 1px solid {COLORS['border']} !important;
-                border-radius: 12px !important;
-                padding: 16px !important;
-                text-align: left !important;
-                transition: all 0.2s ease !important;
-            }}
-            
-            .stButton > button:hover {{
-                border-color: {ROCKIT_RED} !important;
-                box-shadow: 0 4px 12px rgba(153, 0, 0, 0.1) !important;
+            .starter-desc {{
+                font-size: 0.875rem;
+                color: {COLORS['text_secondary']};
+                margin: 0;
             }}
             
             /* ===== CHAT MESSAGES ===== */
             [data-testid="stChatMessage"] {{
                 background-color: {COLORS['surface']};
+                border: 1px solid {COLORS['border']};
                 border-radius: 12px;
                 padding: 16px;
                 margin-bottom: 12px;
             }}
             
-            /* ===== CHAT INPUT ===== */
-            [data-testid="stChatInput"] {{
-                border-radius: 12px;
+            /* ===== BUTTONS ===== */
+            .stButton > button {{
+                border-radius: 8px;
+                font-weight: 500;
+                transition: all 0.2s ease;
             }}
             
-            [data-testid="stChatInput"] textarea {{
-                border-radius: 12px !important;
+            .stButton > button[kind="primary"] {{
+                background-color: {COLORS['primary']};
+                border-color: {COLORS['primary']};
             }}
             
-            /* ===== EDIT PROMPT AREA ===== */
-            .edit-prompt-container {{
-                background-color: {COLORS['surface']};
+            .stButton > button[kind="primary"]:hover {{
+                background-color: {COLORS['primary_light']};
+                border-color: {COLORS['primary']};
+            }}
+            
+            /* ===== METRICS ===== */
+            [data-testid="stMetric"] {{
+                background: {COLORS['surface']};
                 border: 1px solid {COLORS['border']};
                 border-radius: 12px;
-                padding: 20px;
-                margin: 20px 0;
+                padding: 16px;
             }}
             
-            .edit-prompt-label {{
-                font-weight: 600;
-                color: {COLORS['text_primary']};
-                margin-bottom: 12px;
-                display: flex;
-                align-items: center;
+            /* ===== TABS ===== */
+            .stTabs [data-baseweb="tab-list"] {{
                 gap: 8px;
             }}
             
-            /* ===== INTEGRATION NAV BUTTON ===== */
-            .integration-nav {{
-                background: linear-gradient(135deg, #FF7A59 0%, #FF5C35 100%);
-                color: white !important;
-                border: none !important;
-                border-radius: 8px !important;
-                padding: 10px 16px !important;
-                font-weight: 600 !important;
-                display: flex !important;
-                align-items: center !important;
-                gap: 8px !important;
-                margin: 8px 0 !important;
-            }}
-            
-            .integration-nav:hover {{
-                opacity: 0.9;
+            .stTabs [data-baseweb="tab"] {{
+                border-radius: 8px 8px 0 0;
+                padding: 8px 16px;
             }}
             
             /* ===== DIVIDERS ===== */
@@ -563,25 +668,12 @@ def init_session_state() -> None:
         "user_name": "Mary",
         "prefill_prompt": None,
         "show_prompt_editor": False,
-        "current_view": "chat",  # "chat", "hubspot", or "admin"
+        "current_view": "chat",  # chat, pipeline, admin, hubspot
     }
     
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
-    
-    # Initialize HubSpot state
-    init_hubspot_state()
-    
-    # Initialize Admin state
-    init_admin_state()
-    
-    # Initialize database
-    if ADMIN_AVAILABLE:
-        try:
-            init_db()
-        except Exception:
-            pass  # Silently fail if DB init has issues
 
 
 # =============================================================================
@@ -589,7 +681,7 @@ def init_session_state() -> None:
 # =============================================================================
 
 def render_sidebar() -> None:
-    """Render the sidebar with bot selector and user info."""
+    """Render the sidebar with navigation, bot selector, and user info."""
     with st.sidebar:
         # Header
         st.markdown(f"""
@@ -600,6 +692,7 @@ def render_sidebar() -> None:
                 </div>
                 <span class="portal-badge">AI Portal</span>
             </div>
+            <span class="version-badge">v7.3</span>
         """, unsafe_allow_html=True)
         
         # User info
@@ -607,58 +700,77 @@ def render_sidebar() -> None:
         
         st.divider()
         
-        # =====================================================================
-        # INTEGRATIONS SECTION (Admin/Capture Lead only)
-        # =====================================================================
-        user_can_access_integrations = ROLES[st.session_state.user_role].get("can_access_integrations", False)
+        # =============================================================
+        # NAVIGATION SECTION
+        # =============================================================
+        current_role = ROLES[st.session_state.user_role]
         
-        if user_can_access_integrations:
+        # Main Navigation
+        st.markdown("**📍 Navigation**")
+        
+        # Chat Button (always available)
+        chat_active = st.session_state.current_view == "chat"
+        if st.button(
+            "💬 AI Assistants",
+            key="nav_chat",
+            use_container_width=True,
+            type="primary" if chat_active else "secondary"
+        ):
+            st.session_state.current_view = "chat"
+            st.rerun()
+        
+        # Pipeline Button (if available and user has access)
+        if PIPELINE_AVAILABLE and current_role.get("can_access_pipeline", False):
+            pipeline_active = st.session_state.current_view == "pipeline"
+            if st.button(
+                "📊 Pipeline Board",
+                key="nav_pipeline",
+                use_container_width=True,
+                type="primary" if pipeline_active else "secondary"
+            ):
+                st.session_state.current_view = "pipeline"
+                st.rerun()
+        
+        # Integrations Section (Admin/Capture Lead only)
+        if current_role.get("can_access_hubspot", False):
+            st.divider()
             st.markdown("**🔗 Integrations**")
             
-            # HubSpot button
-            hubspot_active = st.session_state.current_view == "hubspot"
-            if st.button(
-                "🔶 HubSpot CRM" + (" ✓" if hubspot_active else ""),
-                key="nav_hubspot",
-                use_container_width=True,
-                type="primary" if hubspot_active else "secondary"
-            ):
-                st.session_state.current_view = "hubspot"
-                st.rerun()
-            
+            if HUBSPOT_AVAILABLE:
+                hubspot_active = st.session_state.current_view == "hubspot"
+                if st.button(
+                    "🟠 HubSpot CRM",
+                    key="nav_hubspot",
+                    use_container_width=True,
+                    type="primary" if hubspot_active else "secondary"
+                ):
+                    st.session_state.current_view = "hubspot"
+                    st.rerun()
+        
+        # Admin Section (Admin only)
+        if current_role.get("can_access_admin", False):
             st.divider()
+            st.markdown("**⚙️ Administration**")
             
-            # Admin Dashboard (only for admin role)
-            if st.session_state.user_role == "admin":
-                st.markdown("**⚙️ Administration**")
-                
+            if ADMIN_DASHBOARD_AVAILABLE:
                 admin_active = st.session_state.current_view == "admin"
                 if st.button(
-                    "📊 Admin Dashboard" + (" ✓" if admin_active else ""),
+                    "📊 Admin Dashboard",
                     key="nav_admin",
                     use_container_width=True,
                     type="primary" if admin_active else "secondary"
                 ):
                     st.session_state.current_view = "admin"
                     st.rerun()
-                
-                st.divider()
-            
-            # Back to Chat button (when in integrations/admin)
-            if st.session_state.current_view != "chat":
-                if st.button("← Back to AI Assistants", key="nav_back", use_container_width=True):
-                    st.session_state.current_view = "chat"
-                    st.rerun()
-            
-            st.divider()
         
-        # =====================================================================
-        # BOT SELECTOR (only show when in chat view)
-        # =====================================================================
+        # =============================================================
+        # BOT SELECTOR (only show in chat view)
+        # =============================================================
         if st.session_state.current_view == "chat":
+            st.divider()
             st.markdown("**🤖 Select Assistant**")
             
-            user_can_access_private = ROLES[st.session_state.user_role]["can_access_private"]
+            user_can_access_private = current_role["can_access_private"]
             
             for bot_id, bot in BOTS.items():
                 # Skip private bots for users without access
@@ -682,43 +794,42 @@ def render_sidebar() -> None:
                         type="primary" if is_active else "secondary"
                     ):
                         st.session_state.selected_bot = bot_id
-                        st.session_state.messages = []  # Clear chat on bot switch
+                        st.session_state.messages = []
                         st.session_state.prefill_prompt = None
                         st.rerun()
             
             st.divider()
             
-            # Actions
+            # Clear Chat
             if st.button("🗑️ Clear Chat", use_container_width=True):
                 st.session_state.messages = []
                 st.session_state.prefill_prompt = None
                 st.rerun()
         
-        # =====================================================================
-        # DEMO SETTINGS
-        # =====================================================================
+        # =============================================================
+        # DEMO SETTINGS (always at bottom)
+        # =============================================================
         st.divider()
         st.markdown("**⚙️ Demo Settings**")
         new_role = st.selectbox(
             "Switch Role",
             options=list(ROLES.keys()),
             index=list(ROLES.keys()).index(st.session_state.user_role),
-            format_func=lambda x: f"{ROLES[x]['name']} {'(Private Access)' if ROLES[x]['can_access_private'] else ''}"
+            format_func=lambda x: f"{ROLES[x]['name']} {'(Admin)' if ROLES[x].get('can_access_admin') else ''}"
         )
         if new_role != st.session_state.user_role:
             st.session_state.user_role = new_role
+            # Reset view if user loses access
+            if not ROLES[new_role].get("can_access_admin") and st.session_state.current_view == "admin":
+                st.session_state.current_view = "chat"
+            if not ROLES[new_role].get("can_access_pipeline") and st.session_state.current_view == "pipeline":
+                st.session_state.current_view = "chat"
+            if not ROLES[new_role].get("can_access_hubspot") and st.session_state.current_view == "hubspot":
+                st.session_state.current_view = "chat"
             # If switching to a role without private access and currently viewing private bot
             if not ROLES[new_role]["can_access_private"] and BOTS[st.session_state.selected_bot].is_private:
                 st.session_state.selected_bot = "proposal_writer"
-            # If switching to role without integration access and currently in integrations
-            if not ROLES[new_role].get("can_access_integrations", False) and st.session_state.current_view != "chat":
-                st.session_state.current_view = "chat"
             st.rerun()
-        
-        # Version info
-        st.divider()
-        st.caption("AMANDA™ Portal v7.3")
-        st.caption("Phase 1B: HubSpot Integration")
 
 
 # =============================================================================
@@ -726,53 +837,36 @@ def render_sidebar() -> None:
 # =============================================================================
 
 def render_zero_state(bot: BotConfig) -> None:
-    """
-    Render the zero state UI for a bot with starter prompts.
-    
-    Args:
-        bot: The BotConfig for the currently selected bot
-    """
+    """Render the zero state with bot info and starter prompts."""
+    # Bot header
     st.markdown(f"""
-        <div class="zero-state-container">
-            <div class="bot-icon-large">{bot.icon}</div>
-            <h2 class="bot-name">
-                {bot.name}
-                {'<span class="private-badge">🔒 Private</span>' if bot.is_private else ''}
-            </h2>
-            <p class="bot-tagline {bot.color}">{bot.tagline}</p>
+        <div class="bot-header">
+            <div class="bot-icon">{bot.icon}</div>
+            <h1 class="bot-name">{bot.name}</h1>
+            <p class="bot-tagline">{bot.tagline}</p>
             <p class="bot-description">{bot.description}</p>
         </div>
     """, unsafe_allow_html=True)
     
-    # Quick Start label
-    st.markdown("""
-        <div class="quick-start-label">
-            <span>💬</span>
-            <span>Quick Start</span>
-        </div>
-    """, unsafe_allow_html=True)
+    # Starter prompts
+    st.markdown("### 💡 Quick Start")
     
-    # Starter prompt cards
+    cols = st.columns(2)
     for i, starter in enumerate(bot.starters):
-        # Create a container that looks like a card
-        with st.container():
-            col1, col2 = st.columns([11, 1])
-            
-            with col1:
-                if st.button(
-                    f"{starter.icon}  **{starter.title}**\n\n{starter.description}",
-                    key=f"starter_{bot.id}_{i}",
-                    use_container_width=True,
-                    type="secondary"
-                ):
+        with cols[i % 2]:
+            with st.container():
+                st.markdown(f"""
+                    <div class="starter-card">
+                        <div class="starter-icon">{starter.icon}</div>
+                        <p class="starter-title">{starter.title}</p>
+                        <p class="starter-desc">{starter.description}</p>
+                    </div>
+                """, unsafe_allow_html=True)
+                
+                if st.button(f"Use this prompt", key=f"starter_{i}", use_container_width=True):
                     st.session_state.prefill_prompt = starter.prompt_template
                     st.session_state.show_prompt_editor = True
                     st.rerun()
-    
-    # Keyboard hint
-    st.markdown("""
-        <p class="keyboard-hint">Or just start typing in the chat box below...</p>
-    """, unsafe_allow_html=True)
 
 
 # =============================================================================
@@ -780,38 +874,25 @@ def render_zero_state(bot: BotConfig) -> None:
 # =============================================================================
 
 def render_prompt_editor() -> Optional[str]:
-    """
-    Render the prompt editor when a starter is selected.
-    
-    Returns:
-        The final prompt to send, or None if cancelled
-    """
-    st.markdown("""
-        <div class="edit-prompt-label">
-            <span>✏️</span>
-            <span>Customize Your Prompt</span>
-        </div>
-    """, unsafe_allow_html=True)
+    """Render the prompt editor and return the final prompt if submitted."""
+    st.markdown("### ✏️ Edit Your Prompt")
+    st.markdown("Customize the template below, then send to the assistant.")
     
     edited_prompt = st.text_area(
-        "Edit the template below, then click Send:",
+        "Your prompt",
         value=st.session_state.prefill_prompt,
-        height=180,
-        key="prompt_editor",
-        label_visibility="collapsed",
-        placeholder="Enter your prompt here..."
+        height=200,
+        label_visibility="collapsed"
     )
     
-    col1, col2, col3 = st.columns([1, 1, 2])
-    
+    col1, col2 = st.columns([1, 4])
     with col1:
-        if st.button("Cancel", use_container_width=True):
+        if st.button("❌ Cancel", use_container_width=True):
             st.session_state.prefill_prompt = None
             st.session_state.show_prompt_editor = False
             st.rerun()
-    
     with col2:
-        if st.button("Send →", type="primary", use_container_width=True):
+        if st.button("📤 Send to Assistant", type="primary", use_container_width=True):
             st.session_state.prefill_prompt = None
             st.session_state.show_prompt_editor = False
             return edited_prompt
@@ -820,32 +901,26 @@ def render_prompt_editor() -> Optional[str]:
 
 
 # =============================================================================
-# CHAT INTERFACE
+# CHAT MESSAGES
 # =============================================================================
 
 def render_chat_messages() -> None:
-    """Render all messages in the chat history."""
+    """Render the chat message history."""
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
 
+# =============================================================================
+# AI RESPONSE
+# =============================================================================
+
 def get_ai_response(user_message: str, bot: BotConfig) -> str:
-    """
-    Get a response from the Anthropic API.
-    
-    Args:
-        user_message: The user's message
-        bot: The current bot configuration
-        
-    Returns:
-        The AI assistant's response
-    """
-    # Get API key from environment
+    """Get a response from the Anthropic API."""
     api_key = os.getenv("ANTHROPIC_API_KEY")
     
     if not api_key:
-        return "⚠️ **API Key Not Configured**\n\nPlease set the `ANTHROPIC_API_KEY` environment variable to enable AI responses.\n\n```bash\nexport ANTHROPIC_API_KEY='your-key-here'\n```"
+        return "⚠️ **API Key Not Configured**\n\nPlease set the `ANTHROPIC_API_KEY` environment variable.\n\n---\n*AI GENERATED - REQUIRES HUMAN REVIEW*"
     
     try:
         client = Anthropic(api_key=api_key)
@@ -874,10 +949,21 @@ def get_ai_response(user_message: str, bot: BotConfig) -> str:
             
             response_placeholder.markdown(full_response)
         
+        # Track token usage if database available
+        if DATABASE_AVAILABLE:
+            try:
+                track_token_usage(
+                    bot_id=bot.id,
+                    input_tokens=len(user_message.split()) * 2,  # Rough estimate
+                    output_tokens=len(full_response.split()) * 2
+                )
+            except:
+                pass
+        
         return full_response
         
     except Exception as e:
-        return f"⚠️ **Error communicating with AI**\n\n{str(e)}"
+        return f"⚠️ **Error communicating with AI**\n\n{str(e)}\n\n---\n*AI GENERATED - REQUIRES HUMAN REVIEW*"
 
 
 # =============================================================================
@@ -890,37 +976,33 @@ def main() -> None:
     init_session_state()
     render_sidebar()
     
-    # =========================================================================
-    # VIEW ROUTER
-    # =========================================================================
+    # Route to appropriate view
+    current_view = st.session_state.current_view
     
-    # Admin Dashboard View
-    if st.session_state.current_view == "admin":
-        if st.session_state.user_role == "admin":
-            if ADMIN_AVAILABLE:
-                render_admin_dashboard()
-            else:
-                st.error("⚠️ Admin Dashboard module not available.")
-        else:
-            st.error("🚫 You don't have access to the Admin Dashboard.")
-            st.info("Only users with Admin role can access this section.")
+    # =============================================================
+    # PIPELINE VIEW
+    # =============================================================
+    if current_view == "pipeline" and PIPELINE_AVAILABLE:
+        show_pipeline()
         return
     
-    # HubSpot Dashboard View
-    if st.session_state.current_view == "hubspot":
-        user_can_access_integrations = ROLES[st.session_state.user_role].get("can_access_integrations", False)
-        if user_can_access_integrations:
-            render_hubspot_dashboard()
-        else:
-            st.error("🚫 You don't have access to integrations.")
-            st.info("Contact your admin to request access.")
+    # =============================================================
+    # ADMIN DASHBOARD
+    # =============================================================
+    if current_view == "admin" and ADMIN_DASHBOARD_AVAILABLE:
+        show_admin_dashboard()
         return
     
-    # =========================================================================
-    # CHAT VIEW (Default)
-    # =========================================================================
+    # =============================================================
+    # HUBSPOT DASHBOARD
+    # =============================================================
+    if current_view == "hubspot" and HUBSPOT_AVAILABLE:
+        show_hubspot_dashboard()
+        return
     
-    # Get current bot
+    # =============================================================
+    # CHAT VIEW (default)
+    # =============================================================
     current_bot = BOTS[st.session_state.selected_bot]
     
     # Check access
@@ -935,7 +1017,6 @@ def main() -> None:
         # Show prompt editor
         sent_prompt = render_prompt_editor()
         if sent_prompt:
-            # Process the edited prompt
             st.session_state.messages.append({"role": "user", "content": sent_prompt})
             response = get_ai_response(sent_prompt, current_bot)
             st.session_state.messages.append({"role": "assistant", "content": response})
@@ -957,14 +1038,11 @@ def main() -> None:
         )
         
         if user_input:
-            # Add user message
             st.session_state.messages.append({"role": "user", "content": user_input})
             
-            # Display user message
             with st.chat_message("user"):
                 st.markdown(user_input)
             
-            # Get and display AI response
             response = get_ai_response(user_input, current_bot)
             st.session_state.messages.append({"role": "assistant", "content": response})
             
