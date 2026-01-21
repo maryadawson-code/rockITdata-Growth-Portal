@@ -28,6 +28,25 @@ except ImportError:
         pass
 
 # =============================================================================
+# ADMIN DASHBOARD
+# =============================================================================
+
+try:
+    from admin_dashboard import render_admin_dashboard, init_admin_state
+    from database import initialize as init_db, log_token_usage
+    ADMIN_AVAILABLE = True
+except ImportError:
+    ADMIN_AVAILABLE = False
+    def render_admin_dashboard():
+        st.error("⚠️ Admin module not found. Ensure `admin_dashboard.py` and `database.py` are in your project.")
+    def init_admin_state():
+        pass
+    def init_db():
+        pass
+    def log_token_usage(*args, **kwargs):
+        pass
+
+# =============================================================================
 # CONFIGURATION
 # =============================================================================
 
@@ -544,7 +563,7 @@ def init_session_state() -> None:
         "user_name": "Mary",
         "prefill_prompt": None,
         "show_prompt_editor": False,
-        "current_view": "chat",  # "chat" or "hubspot"
+        "current_view": "chat",  # "chat", "hubspot", or "admin"
     }
     
     for key, value in defaults.items():
@@ -553,6 +572,16 @@ def init_session_state() -> None:
     
     # Initialize HubSpot state
     init_hubspot_state()
+    
+    # Initialize Admin state
+    init_admin_state()
+    
+    # Initialize database
+    if ADMIN_AVAILABLE:
+        try:
+            init_db()
+        except Exception:
+            pass  # Silently fail if DB init has issues
 
 
 # =============================================================================
@@ -597,7 +626,25 @@ def render_sidebar() -> None:
                 st.session_state.current_view = "hubspot"
                 st.rerun()
             
-            # Back to Chat button (when in integrations)
+            st.divider()
+            
+            # Admin Dashboard (only for admin role)
+            if st.session_state.user_role == "admin":
+                st.markdown("**⚙️ Administration**")
+                
+                admin_active = st.session_state.current_view == "admin"
+                if st.button(
+                    "📊 Admin Dashboard" + (" ✓" if admin_active else ""),
+                    key="nav_admin",
+                    use_container_width=True,
+                    type="primary" if admin_active else "secondary"
+                ):
+                    st.session_state.current_view = "admin"
+                    st.rerun()
+                
+                st.divider()
+            
+            # Back to Chat button (when in integrations/admin)
             if st.session_state.current_view != "chat":
                 if st.button("← Back to AI Assistants", key="nav_back", use_container_width=True):
                     st.session_state.current_view = "chat"
@@ -846,6 +893,18 @@ def main() -> None:
     # =========================================================================
     # VIEW ROUTER
     # =========================================================================
+    
+    # Admin Dashboard View
+    if st.session_state.current_view == "admin":
+        if st.session_state.user_role == "admin":
+            if ADMIN_AVAILABLE:
+                render_admin_dashboard()
+            else:
+                st.error("⚠️ Admin Dashboard module not available.")
+        else:
+            st.error("🚫 You don't have access to the Admin Dashboard.")
+            st.info("Only users with Admin role can access this section.")
+        return
     
     # HubSpot Dashboard View
     if st.session_state.current_view == "hubspot":
