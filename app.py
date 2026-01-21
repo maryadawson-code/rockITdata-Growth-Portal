@@ -1,48 +1,534 @@
 """
-AMANDA™ Portal - Main Application
-===================================
+rockITdata AI Portal - Main Application
+========================================
 A secure, role-based AI assistant portal for federal proposal development.
 
 Author: rockITdata LLC
-Version: 2.0.0
+Version: 7.3 (Phase 1B - HubSpot Integration)
 """
 
 import streamlit as st
 from anthropic import Anthropic
-import os
+from dataclasses import dataclass
 from typing import Optional
+import os
 
-from config import (
-    BRAND, COLORS, ROLES, BOTS, GATES, PAGES,
-    PHASE_COLORS, PHASE_NAMES, RoleType
-)
-from database import (
-    get_deals, get_deal_by_id, get_artifacts, get_requirements,
-    get_reviews, get_issues, get_partners, get_playbook_lessons,
-    get_users, get_pipeline_stats, get_compliance_stats,
-    DealStatus, DealPriority, ArtifactStatus, RequirementType,
-    RequirementStatus, ReviewType, ReviewStatus, IssueSeverity,
-    IssueStatus, PartnerType, PartnerStatus, TAStatus, LessonCategory
-)
-from demo_mode import get_demo_engine, DemoScenario
-from onboarding import get_tour_for_role, get_general_tour, TourStep
-from components import (
-    inject_custom_css, render_page_header, render_metric_card,
-    render_progress_bar, render_phase_navigator, render_demo_mode_banner,
-    render_empty_state, format_currency, status_badge, render_badge
-)
+# =============================================================================
+# HUBSPOT INTEGRATION (Phase 1B)
+# =============================================================================
+
+try:
+    from hubspot_dashboard import render_hubspot_dashboard, init_hubspot_state
+    HUBSPOT_AVAILABLE = True
+except ImportError:
+    HUBSPOT_AVAILABLE = False
+    def render_hubspot_dashboard():
+        st.error("⚠️ HubSpot module not found. Ensure `hubspot_dashboard.py` is in your project.")
+    def init_hubspot_state():
+        pass
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+# Brand colors
+ROCKIT_RED = "#990000"
+ROCKIT_RED_LIGHT = "#CC3333"
+ROCKIT_DARK = "#1a1a2e"
+
+# Color palette for light mode
+COLORS = {
+    "primary": ROCKIT_RED,
+    "primary_light": "#FEE2E2",
+    "background": "#FFFFFF",
+    "surface": "#F8FAFC",
+    "surface_alt": "#F1F5F9",
+    "border": "#E2E8F0",
+    "text_primary": "#1E293B",
+    "text_secondary": "#64748B",
+    "text_muted": "#94A3B8",
+    "success": "#10B981",
+    "warning": "#F59E0B",
+    "error": "#EF4444",
+    "blue": "#3B82F6",
+    "green": "#10B981",
+    "violet": "#8B5CF6",
+    "orange": "#F97316",
+}
 
 
 # =============================================================================
-# PAGE CONFIGURATION
+# DATA CLASSES
 # =============================================================================
 
-st.set_page_config(
-    page_title=f"{BRAND['product']} Portal | {BRAND['name']}",
-    page_icon="🚀",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+@dataclass
+class StarterPrompt:
+    """A clickable starter prompt for the zero state."""
+    title: str
+    description: str
+    prompt_template: str
+    icon: str
+
+
+@dataclass
+class BotConfig:
+    """Configuration for an AI assistant bot."""
+    id: str
+    name: str
+    icon: str
+    tagline: str
+    description: str
+    color: str
+    system_prompt: str
+    starters: list[StarterPrompt]
+    is_private: bool = False
+
+
+# =============================================================================
+# BOT CONFIGURATIONS
+# =============================================================================
+
+BOTS: dict[str, BotConfig] = {
+    "proposal_writer": BotConfig(
+        id="proposal_writer",
+        name="Proposal Writer",
+        icon="📝",
+        tagline="Your AI partner for compelling federal proposals",
+        description="I help you draft winning proposal sections, executive summaries, and technical volumes aligned with PWS requirements.",
+        color="blue",
+        system_prompt="""You are an expert federal proposal writer for rockITdata, a SDVOSB/WOSB government contractor specializing in federal healthcare IT (DHA, VA, CMS, IHS).
+
+Your expertise includes:
+- Writing compelling executive summaries and technical volumes
+- Creating compliance matrices from Section L/M requirements
+- Analyzing PWS/SOW documents to extract requirements
+- Aligning responses with evaluation criteria
+- Using Shipley methodology for proposal development
+
+Always structure responses with clear headings, bullet points for requirements, and action items. Reference specific solicitation sections when applicable.""",
+        starters=[
+            StarterPrompt(
+                title="Draft Executive Summary",
+                description="Create a compelling exec summary from your capture data",
+                prompt_template="Help me draft an Executive Summary for [AGENCY] [CONTRACT NAME]. Our key differentiators are:\n\n1. \n2. \n3. ",
+                icon="✨"
+            ),
+            StarterPrompt(
+                title="Create Compliance Matrix",
+                description="Build L/M crosswalk from solicitation requirements",
+                prompt_template="Analyze this PWS and create a compliance matrix mapping each requirement to our proposed response sections:\n\n[PASTE PWS TEXT OR UPLOAD FILE]",
+                icon="✅"
+            ),
+            StarterPrompt(
+                title="Analyze PWS/SOW",
+                description="Extract requirements, evaluation criteria, and hidden risks",
+                prompt_template="Shred this PWS and identify:\n1. Mandatory requirements (shall statements)\n2. Evaluation criteria from Section M\n3. Potential risks or ambiguities\n\n[PASTE PWS TEXT OR UPLOAD FILE]",
+                icon="🎯"
+            ),
+        ]
+    ),
+    
+    "compliance_checker": BotConfig(
+        id="compliance_checker",
+        name="Compliance Checker",
+        icon="🛡️",
+        tagline="Never miss a requirement again",
+        description="I validate your proposal against Section L/M, FAR/DFAR clauses, and agency-specific requirements.",
+        color="green",
+        system_prompt="""You are a compliance specialist for federal proposals at rockITdata. Your role is to ensure proposals meet all requirements.
+
+Your expertise includes:
+- Validating proposals against Section L (Instructions) and Section M (Evaluation Criteria)
+- Checking FAR/DFAR clause compliance
+- Verifying format requirements (page limits, fonts, margins)
+- Ensuring all attachments and certifications are complete
+- Identifying gaps between requirements and proposal responses
+
+Be thorough and specific. Flag issues with severity levels (Critical, Major, Minor). Provide specific remediation steps.""",
+        starters=[
+            StarterPrompt(
+                title="Validate Section L/M",
+                description="Check proposal against instructions and evaluation criteria",
+                prompt_template="Review my proposal draft against these Section L/M requirements and identify any gaps or non-compliant sections:\n\nSection L Requirements:\n[PASTE HERE]\n\nMy Draft:\n[PASTE HERE]",
+                icon="✅"
+            ),
+            StarterPrompt(
+                title="FAR/DFAR Compliance",
+                description="Verify regulatory clause compliance",
+                prompt_template="Check this proposal section for compliance with the following FAR/DFAR clauses:\n\nClauses: [LIST CLAUSE NUMBERS]\n\nProposal Section:\n[PASTE HERE]",
+                icon="🛡️"
+            ),
+            StarterPrompt(
+                title="Pre-Submission Checklist",
+                description="Final review before you hit submit",
+                prompt_template="Run a final compliance checklist for this submission:\n\nSolicitation: [NAME/NUMBER]\nPage Limit: [X pages]\nFormat Requirements: [FONT, MARGINS, etc.]\n\nPlease verify: page limits, font requirements, volume structure, required attachments, and certifications.",
+                icon="📋"
+            ),
+        ]
+    ),
+    
+    "win_theme_generator": BotConfig(
+        id="win_theme_generator",
+        name="Win Theme Generator",
+        icon="🎯",
+        tagline="Turn differentiators into winning messages",
+        description="I craft compelling win themes, discriminators, and proof points that resonate with evaluators.",
+        color="violet",
+        system_prompt="""You are a capture strategist specializing in win theme development for rockITdata federal proposals.
+
+Your expertise includes:
+- Identifying and articulating key differentiators
+- Creating competitor ghost profiles
+- Developing evaluator-focused win themes
+- Crafting proof points with quantified benefits
+- Aligning themes with customer hot buttons
+
+Structure win themes as: Feature → Benefit → Proof Point. Make themes specific, measurable, and evaluator-focused.""",
+        starters=[
+            StarterPrompt(
+                title="Extract Differentiators",
+                description="Identify what makes your solution unique",
+                prompt_template="Based on our capabilities, identify 5 key differentiators for this opportunity:\n\nOpportunity: [AGENCY/CONTRACT NAME]\nIncumbent: [IF KNOWN]\nOur Strengths:\n1. \n2. \n3. ",
+                icon="✨"
+            ),
+            StarterPrompt(
+                title="Build Ghost Competitors",
+                description="Anticipate competitor positioning",
+                prompt_template="Create ghost competitor profiles and predict their likely win themes and weaknesses:\n\nCompetitors to analyze:\n1. [COMPANY NAME]\n2. [COMPANY NAME]\n\nOpportunity Context: [BRIEF DESCRIPTION]",
+                icon="👻"
+            ),
+            StarterPrompt(
+                title="Craft Win Themes",
+                description="Create evaluator-focused messaging",
+                prompt_template="Generate 3 win themes that align our strengths with the customer's priorities:\n\nCustomer Hot Buttons:\n1. \n2. \n\nOur Key Strengths:\n1. \n2. ",
+                icon="⚡"
+            ),
+        ]
+    ),
+    
+    "black_hat": BotConfig(
+        id="black_hat",
+        name="Black Hat Reviewer",
+        icon="🎭",
+        tagline="See your proposal through the evaluator's eyes",
+        description="I simulate a harsh government evaluator to find weaknesses before submission.",
+        color="red",
+        is_private=True,
+        system_prompt="""You are a skeptical government evaluator conducting a Black Hat review of proposals for rockITdata.
+
+Your role is to:
+- Critique proposals harshly but constructively
+- Identify unsupported claims and vague language
+- Find gaps in compliance with evaluation criteria
+- Score sections against Section M criteria
+- Predict competitor advantages
+
+Be direct and specific. Rate issues by severity. Provide concrete recommendations for improvement. Do not sugarcoat - the goal is to find weaknesses before the real evaluators do.""",
+        starters=[
+            StarterPrompt(
+                title="Simulate Evaluator Critique",
+                description="Red team your proposal section",
+                prompt_template="Act as a skeptical government evaluator. Review this section and identify:\n- Weaknesses and gaps\n- Unsupported claims\n- Areas that would score poorly\n\n[PASTE PROPOSAL SECTION]",
+                icon="🔍"
+            ),
+            StarterPrompt(
+                title="Score Against Criteria",
+                description="Predict your evaluation score",
+                prompt_template="Score this proposal section against the evaluation criteria. Justify each rating and suggest improvements:\n\nEvaluation Criteria (from Section M):\n[PASTE CRITERIA]\n\nProposal Section:\n[PASTE SECTION]",
+                icon="📊"
+            ),
+            StarterPrompt(
+                title="Find Weaknesses",
+                description="Identify vulnerabilities competitors will exploit",
+                prompt_template="Analyze our proposal for weaknesses a competitor could exploit in their proposal. What are we missing? What claims are unsupported?\n\n[PASTE PROPOSAL OR KEY SECTIONS]",
+                icon="⚠️"
+            ),
+        ]
+    ),
+    
+    "strategy_coach": BotConfig(
+        id="strategy_coach",
+        name="Strategy Coach",
+        icon="🧠",
+        tagline="Make smarter capture decisions",
+        description="I help with bid/no-bid analysis, capture planning, competitive positioning, and teaming strategies.",
+        color="orange",
+        is_private=True,
+        system_prompt="""You are a senior capture manager and strategy coach for rockITdata federal pursuits.
+
+Your expertise includes:
+- Bid/no-bid decision analysis with PWin scoring
+- Capture planning and milestone development
+- Competitive positioning and teaming strategies
+- Customer relationship assessment
+- Price-to-win analysis
+
+Use data-driven frameworks. Provide specific recommendations with rationale. Consider rockITdata's SDVOSB/WOSB certifications and healthcare IT focus in all analyses.""",
+        starters=[
+            StarterPrompt(
+                title="Bid/No-Bid Analysis",
+                description="Evaluate opportunity fit and win probability",
+                prompt_template="Help me evaluate this opportunity for a bid/no-bid decision:\n\nOpportunity: [NAME/NUMBER]\nAgency: [AGENCY]\nContract Value: $[VALUE]\nOur PWin Factors:\n- Customer Relationship: [1-5]\n- Technical Fit: [1-5]\n- Past Performance: [1-5]\n- Price Competitiveness: [1-5]",
+                icon="🎲"
+            ),
+            StarterPrompt(
+                title="Capture Planning",
+                description="Build a winning capture strategy",
+                prompt_template="Help me develop a capture plan for:\n\nOpportunity: [NAME]\nRFP Release Date: [DATE]\nProposal Due: [DATE]\n\nWhat should our capture milestones and actions be?",
+                icon="📅"
+            ),
+            StarterPrompt(
+                title="Teaming Strategy",
+                description="Identify optimal teaming partners",
+                prompt_template="Recommend teaming partners for this opportunity:\n\nOpportunity Requirements:\n- [KEY REQUIREMENT 1]\n- [KEY REQUIREMENT 2]\n\nOur Gaps:\n- [GAP 1]\n- [GAP 2]\n\nKnown Competitors: [LIST]",
+                icon="🤝"
+            ),
+        ]
+    ),
+}
+
+
+# =============================================================================
+# USER ROLES
+# =============================================================================
+
+ROLES = {
+    "admin": {"name": "Admin", "can_access_private": True, "can_access_integrations": True},
+    "capture_lead": {"name": "Capture Lead", "can_access_private": True, "can_access_integrations": True},
+    "proposal_manager": {"name": "Proposal Manager", "can_access_private": False, "can_access_integrations": False},
+    "analyst": {"name": "Analyst", "can_access_private": False, "can_access_integrations": False},
+    "standard": {"name": "Standard User", "can_access_private": False, "can_access_integrations": False},
+}
+
+
+# =============================================================================
+# PAGE CONFIG & STYLING
+# =============================================================================
+
+def configure_page() -> None:
+    """Configure Streamlit page settings and inject custom CSS."""
+    st.set_page_config(
+        page_title="rockITdata AI Portal",
+        page_icon="🚀",
+        layout="centered",
+        initial_sidebar_state="expanded"
+    )
+    
+    # Inject custom CSS
+    st.markdown(f"""
+        <style>
+            /* ===== ROOT VARIABLES ===== */
+            :root {{
+                --rockit-red: {ROCKIT_RED};
+                --rockit-red-light: {ROCKIT_RED_LIGHT};
+            }}
+            
+            /* ===== HIDE STREAMLIT DEFAULTS ===== */
+            #MainMenu {{visibility: hidden;}}
+            footer {{visibility: hidden;}}
+            header {{visibility: hidden;}}
+            
+            /* ===== SIDEBAR STYLING ===== */
+            [data-testid="stSidebar"] {{
+                background-color: {COLORS['surface']};
+                border-right: 1px solid {COLORS['border']};
+            }}
+            
+            [data-testid="stSidebar"] .block-container {{
+                padding-top: 2rem;
+            }}
+            
+            /* ===== PORTAL HEADER ===== */
+            .portal-header {{
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                padding: 8px 0 16px 0;
+                margin-bottom: 8px;
+            }}
+            
+            .portal-logo {{
+                font-size: 2rem;
+            }}
+            
+            .portal-title {{
+                font-weight: 700;
+                font-size: 1.25rem;
+                color: {ROCKIT_RED};
+                margin: 0;
+                line-height: 1.2;
+            }}
+            
+            .portal-badge {{
+                background: {COLORS['primary_light']};
+                color: {ROCKIT_RED};
+                padding: 2px 8px;
+                border-radius: 4px;
+                font-size: 0.7rem;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }}
+            
+            /* ===== ZERO STATE ===== */
+            .zero-state-container {{
+                text-align: center;
+                padding: 40px 20px;
+            }}
+            
+            .bot-icon-large {{
+                font-size: 4rem;
+                margin-bottom: 16px;
+            }}
+            
+            .bot-name {{
+                font-size: 1.75rem;
+                font-weight: 700;
+                color: {COLORS['text_primary']};
+                margin-bottom: 8px;
+            }}
+            
+            .private-badge {{
+                background: {COLORS['warning']};
+                color: white;
+                padding: 2px 8px;
+                border-radius: 4px;
+                font-size: 0.7rem;
+                font-weight: 600;
+                margin-left: 8px;
+            }}
+            
+            .bot-tagline {{
+                font-size: 1rem;
+                color: {COLORS['text_secondary']};
+                margin-bottom: 8px;
+            }}
+            
+            .bot-tagline.blue {{ color: {COLORS['blue']}; }}
+            .bot-tagline.green {{ color: {COLORS['green']}; }}
+            .bot-tagline.violet {{ color: {COLORS['violet']}; }}
+            .bot-tagline.orange {{ color: {COLORS['orange']}; }}
+            .bot-tagline.red {{ color: {ROCKIT_RED}; }}
+            
+            .bot-description {{
+                color: {COLORS['text_secondary']};
+                max-width: 500px;
+                margin: 0 auto 24px auto;
+                line-height: 1.6;
+            }}
+            
+            /* ===== QUICK START SECTION ===== */
+            .quick-start-label {{
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                font-weight: 600;
+                color: {COLORS['text_primary']};
+                margin: 24px 0 16px 0;
+                justify-content: center;
+            }}
+            
+            .keyboard-hint {{
+                text-align: center;
+                color: {COLORS['text_muted']};
+                font-size: 0.85rem;
+                margin-top: 24px;
+            }}
+            
+            /* ===== STARTER CARDS ===== */
+            .stButton > button {{
+                border: 1px solid {COLORS['border']} !important;
+                border-radius: 12px !important;
+                padding: 16px !important;
+                text-align: left !important;
+                transition: all 0.2s ease !important;
+            }}
+            
+            .stButton > button:hover {{
+                border-color: {ROCKIT_RED} !important;
+                box-shadow: 0 4px 12px rgba(153, 0, 0, 0.1) !important;
+            }}
+            
+            /* ===== CHAT MESSAGES ===== */
+            [data-testid="stChatMessage"] {{
+                background-color: {COLORS['surface']};
+                border-radius: 12px;
+                padding: 16px;
+                margin-bottom: 12px;
+            }}
+            
+            /* ===== CHAT INPUT ===== */
+            [data-testid="stChatInput"] {{
+                border-radius: 12px;
+            }}
+            
+            [data-testid="stChatInput"] textarea {{
+                border-radius: 12px !important;
+            }}
+            
+            /* ===== EDIT PROMPT AREA ===== */
+            .edit-prompt-container {{
+                background-color: {COLORS['surface']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 12px;
+                padding: 20px;
+                margin: 20px 0;
+            }}
+            
+            .edit-prompt-label {{
+                font-weight: 600;
+                color: {COLORS['text_primary']};
+                margin-bottom: 12px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }}
+            
+            /* ===== INTEGRATION NAV BUTTON ===== */
+            .integration-nav {{
+                background: linear-gradient(135deg, #FF7A59 0%, #FF5C35 100%);
+                color: white !important;
+                border: none !important;
+                border-radius: 8px !important;
+                padding: 10px 16px !important;
+                font-weight: 600 !important;
+                display: flex !important;
+                align-items: center !important;
+                gap: 8px !important;
+                margin: 8px 0 !important;
+            }}
+            
+            .integration-nav:hover {{
+                opacity: 0.9;
+            }}
+            
+            /* ===== DIVIDERS ===== */
+            hr {{
+                border: none;
+                border-top: 1px solid {COLORS['border']};
+                margin: 1.5rem 0;
+            }}
+            
+            /* ===== SCROLLBAR ===== */
+            ::-webkit-scrollbar {{
+                width: 8px;
+                height: 8px;
+            }}
+            
+            ::-webkit-scrollbar-track {{
+                background: {COLORS['surface']};
+            }}
+            
+            ::-webkit-scrollbar-thumb {{
+                background: {COLORS['border']};
+                border-radius: 4px;
+            }}
+            
+            ::-webkit-scrollbar-thumb:hover {{
+                background: {COLORS['text_muted']};
+            }}
+        </style>
+    """, unsafe_allow_html=True)
 
 
 # =============================================================================
@@ -50,29 +536,23 @@ st.set_page_config(
 # =============================================================================
 
 def init_session_state() -> None:
-    """Initialize session state variables."""
+    """Initialize all session state variables."""
     defaults = {
-        "user_role": "capture_lead",
-        "user_name": "Mary Womack",
-        "current_page": "dashboard",
-        "selected_deal": None,
-        "selected_bot": "general",
         "messages": [],
-        "demo_mode": True,  # Default to demo mode
-        "show_prompt_editor": False,
+        "selected_bot": "proposal_writer",
+        "user_role": "capture_lead",
+        "user_name": "Mary",
         "prefill_prompt": None,
-        # Tour state
-        "tour_active": False,
-        "tour_step": 0,
-        "tour_completed": False,
-        "show_tour_prompt": True,  # Show "Start Tour?" on first visit
-        "role_tour_active": False,
-        "role_tour_step": 0,
+        "show_prompt_editor": False,
+        "current_view": "chat",  # "chat" or "hubspot"
     }
     
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+    
+    # Initialize HubSpot state
+    init_hubspot_state()
 
 
 # =============================================================================
@@ -80,982 +560,258 @@ def init_session_state() -> None:
 # =============================================================================
 
 def render_sidebar() -> None:
-    """Render the sidebar navigation."""
+    """Render the sidebar with bot selector and user info."""
     with st.sidebar:
-        # Logo and branding
+        # Header
         st.markdown(f"""
-            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 1.5rem;">
-                <div style="width: 40px; height: 40px; background: {COLORS['primary']}; 
-                            border-radius: 10px; display: flex; align-items: center; 
-                            justify-content: center; color: white; font-size: 1.25rem;">
-                    🚀
-                </div>
+            <div class="portal-header">
+                <div class="portal-logo">🚀</div>
                 <div>
-                    <div style="font-weight: 700; font-size: 1.125rem;">{BRAND['product']}</div>
-                    <div style="font-size: 0.7rem; color: {COLORS['text_secondary']};">
-                        {BRAND['tagline']}
-                    </div>
+                    <p class="portal-title">rockITdata</p>
                 </div>
+                <span class="portal-badge">AI Portal</span>
             </div>
         """, unsafe_allow_html=True)
         
         # User info
-        role_config = ROLES.get(st.session_state.user_role)
-        st.markdown(f"""
-            <div style="background: {COLORS['surface']}; padding: 12px; border-radius: 8px; margin-bottom: 1rem;">
-                <div style="display: flex; align-items: center; gap: 10px;">
-                    <div style="width: 36px; height: 36px; background: {COLORS['primary']}; 
-                                border-radius: 50%; display: flex; align-items: center; 
-                                justify-content: center; color: white; font-size: 0.875rem; font-weight: 600;">
-                        {st.session_state.user_name[:2].upper()}
-                    </div>
-                    <div>
-                        <div style="font-weight: 600; font-size: 0.875rem;">{st.session_state.user_name}</div>
-                        <div style="font-size: 0.75rem; color: {COLORS['text_secondary']};">
-                            {role_config.icon if role_config else ''} {role_config.name if role_config else 'User'}
-                        </div>
-                    </div>
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f"**👤 {st.session_state.user_name}** · {ROLES[st.session_state.user_role]['name']}")
         
         st.divider()
         
-        # Navigation
-        st.markdown("**Navigation**")
+        # =====================================================================
+        # INTEGRATIONS SECTION (Admin/Capture Lead only)
+        # =====================================================================
+        user_can_access_integrations = ROLES[st.session_state.user_role].get("can_access_integrations", False)
         
-        for page_id, page_config in PAGES.items():
-            # Check access for restricted pages
-            if page_config.get("restricted"):
-                role = ROLES.get(st.session_state.user_role)
-                if not role or not role.can_config_system:
-                    continue
+        if user_can_access_integrations:
+            st.markdown("**🔗 Integrations**")
             
-            is_active = st.session_state.current_page == page_id
-            
+            # HubSpot button
+            hubspot_active = st.session_state.current_view == "hubspot"
             if st.button(
-                f"{page_config['icon']} {page_config['name']}",
-                key=f"nav_{page_id}",
+                "🔶 HubSpot CRM" + (" ✓" if hubspot_active else ""),
+                key="nav_hubspot",
                 use_container_width=True,
-                type="primary" if is_active else "secondary",
+                type="primary" if hubspot_active else "secondary"
             ):
-                st.session_state.current_page = page_id
+                st.session_state.current_view = "hubspot"
                 st.rerun()
+            
+            # Back to Chat button (when in integrations)
+            if st.session_state.current_view != "chat":
+                if st.button("← Back to AI Assistants", key="nav_back", use_container_width=True):
+                    st.session_state.current_view = "chat"
+                    st.rerun()
+            
+            st.divider()
         
-        st.divider()
-        
-        # Demo Mode Toggle
-        st.markdown("**Demo Mode**")
-        demo_mode = st.toggle(
-            "Enable Demo Mode",
-            value=st.session_state.demo_mode,
-            help="Run with simulated responses (no API calls)"
-        )
-        if demo_mode != st.session_state.demo_mode:
-            st.session_state.demo_mode = demo_mode
-            demo_engine = get_demo_engine()
-            if demo_mode:
-                demo_engine.enable_demo_mode()
-            else:
-                demo_engine.disable_demo_mode()
-            st.rerun()
-        
-        if st.session_state.demo_mode:
-            st.info("🎬 Demo Mode: Responses are simulated")
-        
-        st.divider()
-        
-        # Guided Tours
-        st.markdown("**Guided Tours**")
-        
-        col_t1, col_t2 = st.columns(2)
-        
-        with col_t1:
-            if st.button("📖 General", use_container_width=True, help="Overview of all features"):
-                st.session_state.tour_active = True
-                st.session_state.tour_step = 0
-                st.session_state.show_tour_prompt = False
-                st.rerun()
-        
-        with col_t2:
-            role_config = ROLES.get(st.session_state.user_role)
-            role_label = role_config.name if role_config else "Role"
-            if st.button(f"🎯 {role_label[:8]}", use_container_width=True, help=f"Tour for {role_label}"):
-                st.session_state.role_tour_active = True
-                st.session_state.role_tour_step = 0
-                st.rerun()
-        
-        st.divider()
-        
-        # Role Switcher (for testing)
-        st.markdown("**Role Switcher** (Testing)")
-        role_options = {k: f"{v.icon} {v.name}" for k, v in ROLES.items() if v.type == RoleType.INTERNAL}
-        role_keys = list(role_options.keys())
-        current_index = role_keys.index(st.session_state.user_role) if st.session_state.user_role in role_keys else 0
-        
-        selected_role = st.selectbox(
-            "Switch Role",
-            options=role_keys,
-            format_func=lambda x: role_options[x],
-            index=current_index,
-            key="role_switcher",
-            label_visibility="collapsed",
-        )
-        
-        if selected_role != st.session_state.user_role:
-            st.session_state.user_role = selected_role
-            # Clear any cached bot selections when role changes
-            if "selected_bot" in st.session_state:
-                # Reset to general bot if current bot not allowed for new role
-                new_role_config = ROLES.get(selected_role)
-                current_bot = BOTS.get(st.session_state.selected_bot)
-                if current_bot and current_bot.is_private:
-                    if selected_role not in current_bot.allowed_roles:
-                        st.session_state.selected_bot = "general"
-            st.rerun()
-        
-        # Show current permissions
-        current_role = ROLES.get(st.session_state.user_role)
-        if current_role:
-            with st.expander("View Permissions"):
-                st.caption(f"**Role:** {current_role.name}")
-                st.caption(f"**Dashboard:** {'✅' if current_role.can_access_dashboard else '❌'}")
-                st.caption(f"**War Room:** {'✅' if current_role.can_access_war_room else '❌'}")
-                st.caption(f"**Pricing:** {'✅' if current_role.can_view_pricing else '❌'}")
-                st.caption(f"**Strategy:** {'✅' if current_role.can_view_strategy else '❌'}")
-                st.caption(f"**Admin:** {'✅' if current_role.can_config_system else '❌'}")
-
-
-# =============================================================================
-# PAGE: DASHBOARD
-# =============================================================================
-
-def render_dashboard_page() -> None:
-    """Render the main dashboard page."""
-    render_page_header("Command Center", "Executive overview of pipeline and operations", "📊")
-    
-    if st.session_state.demo_mode:
-        render_demo_mode_banner()
-    
-    # Pipeline Stats
-    stats = get_pipeline_stats()
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric(
-            label="Total Pipeline",
-            value=format_currency(stats["total_value"]),
-            delta="+12% vs Q3"
-        )
-    
-    with col2:
-        st.metric(
-            label="Weighted Value",
-            value=format_currency(int(stats["weighted_value"])),
-            delta="Based on pWin"
-        )
-    
-    with col3:
-        st.metric(
-            label="Active Deals",
-            value=str(stats["total_deals"]),
-            delta=f"{stats['by_phase'].get('P3', 0)} in development"
-        )
-    
-    with col4:
-        st.metric(
-            label="At Risk",
-            value=str(stats["at_risk_count"]),
-            delta="Needs attention",
-            delta_color="inverse"
-        )
-    
-    st.divider()
-    
-    # Two-column layout
-    col_left, col_right = st.columns([2, 1])
-    
-    with col_left:
-        st.markdown("### 📈 Active Opportunities")
-        
-        deals = get_deals()
-        for deal in deals[:5]:
-            with st.container():
-                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+        # =====================================================================
+        # BOT SELECTOR (only show when in chat view)
+        # =====================================================================
+        if st.session_state.current_view == "chat":
+            st.markdown("**🤖 Select Assistant**")
+            
+            user_can_access_private = ROLES[st.session_state.user_role]["can_access_private"]
+            
+            for bot_id, bot in BOTS.items():
+                # Skip private bots for users without access
+                if bot.is_private and not user_can_access_private:
+                    continue
                 
+                is_active = st.session_state.selected_bot == bot_id
+                
+                col1, col2 = st.columns([1, 6])
                 with col1:
-                    st.markdown(f"**{deal.name}**")
-                    st.caption(f"{deal.customer} · {deal.solicitation_number or 'TBD'}")
-                
+                    st.markdown(f"<span style='font-size: 1.25rem;'>{bot.icon}</span>", unsafe_allow_html=True)
                 with col2:
-                    st.markdown(f"**{format_currency(deal.value)}**")
-                    st.caption("Value")
-                
-                with col3:
-                    pwin_color = "green" if deal.p_win >= 70 else "orange" if deal.p_win >= 50 else "red"
-                    st.markdown(f"**:{pwin_color}[{deal.p_win}%]**")
-                    st.caption("pWin")
-                
-                with col4:
-                    status_color = "green" if deal.status == DealStatus.ON_TRACK else "red" if deal.status == DealStatus.AT_RISK else "gray"
-                    st.markdown(f":{status_color}[● {deal.status.value.replace('_', ' ')}]")
-                    st.caption(f"{deal.phase} / {deal.stage}")
-                
-                st.divider()
-    
-    with col_right:
-        st.markdown("### ⚠️ Open Issues")
-        
-        issues = get_issues(status="OPEN")
-        if issues:
-            for issue in issues[:5]:
-                severity_icon = "🔴" if issue.severity == IssueSeverity.CRITICAL else "🟡" if issue.severity == IssueSeverity.MAJOR else "⚪"
-                st.markdown(f"{severity_icon} **{issue.title[:40]}...**")
-                st.caption(f"{issue.deal_name} · Due: {issue.due_date}")
-        else:
-            st.info("No open issues! 🎉")
-        
-        st.divider()
-        
-        st.markdown("### 📅 Upcoming Reviews")
-        
-        reviews = [r for r in get_reviews() if r.status == ReviewStatus.SCHEDULED or r.status == ReviewStatus.IN_PROGRESS]
-        if reviews:
-            for review in reviews[:3]:
-                color = REVIEW_COLORS.get(review.review_type.value, "#gray")
-                st.markdown(f"**{review.review_type.value} Team** - {review.deal_name}")
-                st.caption(f"📅 {review.scheduled_date} · Lead: {review.lead}")
-        else:
-            st.info("No upcoming reviews scheduled")
-
-
-# =============================================================================
-# PAGE: DEALS PIPELINE
-# =============================================================================
-
-def render_deals_page() -> None:
-    """Render the deals pipeline page."""
-    render_page_header("Deals Pipeline", "Track opportunities through the Shipley lifecycle", "📈")
-    
-    if st.session_state.demo_mode:
-        render_demo_mode_banner()
-    
-    # Filters
-    col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
-    
-    with col1:
-        search = st.text_input("🔍 Search deals", placeholder="Search by name, customer...")
-    
-    with col2:
-        phase_filter = st.selectbox("Phase", ["All", "P0", "P1", "P2", "P3", "P4"])
-    
-    with col3:
-        status_filter = st.selectbox("Status", ["All", "On Track", "At Risk", "New"])
-    
-    with col4:
-        st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
-        if st.button("➕ New Deal", type="primary"):
-            st.toast("New deal form would open here")
-    
-    st.divider()
-    
-    # Deals table
-    deals = get_deals()
-    
-    # Apply filters
-    if search:
-        deals = [d for d in deals if search.lower() in d.name.lower() or search.lower() in d.customer.lower()]
-    if phase_filter != "All":
-        deals = [d for d in deals if d.phase == phase_filter]
-    if status_filter != "All":
-        status_map = {"On Track": "ON_TRACK", "At Risk": "AT_RISK", "New": "NEW"}
-        deals = [d for d in deals if d.status.value == status_map.get(status_filter)]
-    
-    if not deals:
-        render_empty_state("📭", "No deals found", "Try adjusting your filters")
-        return
-    
-    # Table header
-    cols = st.columns([3, 2, 1, 1, 1, 1, 1])
-    with cols[0]:
-        st.markdown("**Deal**")
-    with cols[1]:
-        st.markdown("**Customer**")
-    with cols[2]:
-        st.markdown("**Value**")
-    with cols[3]:
-        st.markdown("**pWin**")
-    with cols[4]:
-        st.markdown("**Phase**")
-    with cols[5]:
-        st.markdown("**Status**")
-    with cols[6]:
-        st.markdown("**Due**")
-    
-    st.divider()
-    
-    # Table rows
-    for deal in deals:
-        cols = st.columns([3, 2, 1, 1, 1, 1, 1])
-        
-        with cols[0]:
-            if st.button(f"**{deal.name}**", key=f"deal_{deal.id}", help="Click to view details"):
-                st.session_state.selected_deal = deal.id
-                st.session_state.current_page = "workflows"
-                st.rerun()
-            st.caption(deal.id)
-        
-        with cols[1]:
-            st.write(deal.customer)
-        
-        with cols[2]:
-            st.write(format_currency(deal.value))
-        
-        with cols[3]:
-            pwin_color = "green" if deal.p_win >= 70 else "orange" if deal.p_win >= 50 else "red"
-            st.progress(deal.p_win / 100)
-            st.caption(f"{deal.p_win}%")
-        
-        with cols[4]:
-            phase_color = PHASE_COLORS.get(deal.phase, "#gray")
-            st.markdown(f"<span style='background:{phase_color}; color:white; padding:2px 8px; border-radius:4px; font-size:0.75rem;'>{deal.phase}</span>", unsafe_allow_html=True)
-            st.caption(deal.stage)
-        
-        with cols[5]:
-            status_color = "🟢" if deal.status == DealStatus.ON_TRACK else "🔴" if deal.status == DealStatus.AT_RISK else "🔵"
-            st.write(f"{status_color} {deal.status.value.replace('_', ' ')}")
-        
-        with cols[6]:
-            st.write(deal.due_date)
-        
-        st.divider()
-
-
-# =============================================================================
-# PAGE: WORKFLOWS
-# =============================================================================
-
-def render_workflows_page() -> None:
-    """Render the workflows/phase navigator page."""
-    render_page_header("Workflows", "Phase Navigator & Gate Approvals", "🔀")
-    
-    if st.session_state.demo_mode:
-        render_demo_mode_banner()
-    
-    # Deal selector
-    deals = get_deals()
-    deal_options = {d.id: f"{d.name} ({d.customer})" for d in deals}
-    
-    selected_id = st.selectbox(
-        "Select Deal",
-        options=list(deal_options.keys()),
-        format_func=lambda x: deal_options[x],
-        index=0 if not st.session_state.selected_deal else list(deal_options.keys()).index(st.session_state.selected_deal) if st.session_state.selected_deal in deal_options else 0,
-    )
-    
-    deal = get_deal_by_id(selected_id)
-    if not deal:
-        render_empty_state("📭", "Deal not found")
-        return
-    
-    st.divider()
-    
-    # Phase Navigator
-    st.markdown("### Phase Navigator")
-    render_phase_navigator(deal.phase, deal.stage)
-    
-    st.divider()
-    
-    # Gate Cards
-    st.markdown("### Gate Status")
-    
-    phases = ["P0", "P1", "P2", "P3", "P4"]
-    current_phase_idx = phases.index(deal.phase) if deal.phase in phases else 0
-    
-    cols = st.columns(2)
-    
-    for i, gate in enumerate(GATES):
-        gate_phase_idx = phases.index(gate.phase) if gate.phase in phases else 0
-        
-        with cols[i % 2]:
-            with st.container():
-                # Determine gate status
-                if gate_phase_idx < current_phase_idx:
-                    status_icon = "✅"
-                    status_text = "Passed"
-                    status_color = "green"
-                elif gate_phase_idx == current_phase_idx:
-                    status_icon = "🔄"
-                    status_text = "Current"
-                    status_color = "orange"
-                else:
-                    status_icon = "⏳"
-                    status_text = "Pending"
-                    status_color = "gray"
-                
-                st.markdown(f"""
-                    <div style="background: {COLORS['surface']}; padding: 1rem; border-radius: 8px; margin-bottom: 1rem; border-left: 4px solid {PHASE_COLORS.get(gate.phase, '#gray')};">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <strong>{gate.name}</strong>
-                            <span style="color: {status_color};">{status_icon} {status_text}</span>
-                        </div>
-                        <div style="font-size: 0.875rem; color: {COLORS['text_secondary']}; margin-top: 0.5rem;">
-                            {gate.description}
-                        </div>
-                    </div>
-                """, unsafe_allow_html=True)
-                
-                # Show checklist for current/next gate
-                if gate_phase_idx >= current_phase_idx and gate_phase_idx <= current_phase_idx + 1:
-                    with st.expander("📋 Checklist"):
-                        for item in gate.checklist:
-                            checked = gate_phase_idx < current_phase_idx
-                            st.checkbox(item, value=checked, disabled=True, key=f"gate_{gate.id}_{item}")
-                        
-                        st.caption(f"Approvers: {', '.join(gate.approvers)}")
-                        
-                        if gate_phase_idx == current_phase_idx:
-                            st.button("Request Approval", type="primary", key=f"approve_{gate.id}")
-
-
-# =============================================================================
-# PAGE: ARTIFACTS
-# =============================================================================
-
-def render_artifacts_page() -> None:
-    """Render the artifacts library page."""
-    render_page_header("Artifacts Library", "Document management & version control", "📁")
-    
-    if st.session_state.demo_mode:
-        render_demo_mode_banner()
-    
-    # Filters
-    col1, col2, col3 = st.columns([2, 1, 1])
-    
-    with col1:
-        search = st.text_input("🔍 Search artifacts", placeholder="Search by name...")
-    
-    with col2:
-        status_filter = st.selectbox("Status", ["All", "Draft", "In Review", "Approved"])
-    
-    with col3:
-        st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
-        if st.button("📤 Upload", type="primary"):
-            st.toast("Upload dialog would open here")
-    
-    st.divider()
-    
-    # Artifacts grid
-    artifacts = get_artifacts()
-    
-    # Apply filters
-    if search:
-        artifacts = [a for a in artifacts if search.lower() in a.name.lower()]
-    if status_filter != "All":
-        status_map = {"Draft": "DRAFT", "In Review": "IN_REVIEW", "Approved": "APPROVED"}
-        artifacts = [a for a in artifacts if a.status.value == status_map.get(status_filter)]
-    
-    if not artifacts:
-        render_empty_state("📭", "No artifacts found", "Upload your first document to get started")
-        return
-    
-    # Display as cards
-    cols = st.columns(3)
-    for i, artifact in enumerate(artifacts):
-        with cols[i % 3]:
-            with st.container():
-                # Status color
-                status_color = "green" if artifact.status == ArtifactStatus.APPROVED else "orange" if artifact.status == ArtifactStatus.IN_REVIEW else "gray"
-                
-                st.markdown(f"""
-                    <div style="background: white; border: 1px solid {COLORS['border']}; border-radius: 12px; padding: 1rem; margin-bottom: 1rem;">
-                        <div style="display: flex; justify-content: space-between; align-items: start;">
-                            <div style="font-weight: 600;">{artifact.name[:35]}{'...' if len(artifact.name) > 35 else ''}</div>
-                            <span style="background: {'#D1FAE5' if status_color == 'green' else '#FEF3C7' if status_color == 'orange' else '#F3F4F6'}; 
-                                         color: {'#065F46' if status_color == 'green' else '#92400E' if status_color == 'orange' else '#374151'};
-                                         padding: 2px 8px; border-radius: 9999px; font-size: 0.7rem;">
-                                {artifact.status.value.replace('_', ' ')}
-                            </span>
-                        </div>
-                        <div style="font-size: 0.75rem; color: {COLORS['text_secondary']}; margin-top: 0.5rem;">
-                            {artifact.deal_name} · {artifact.version}
-                        </div>
-                    </div>
-                """, unsafe_allow_html=True)
-                
-                # Compliance meter (if applicable)
-                if artifact.compliance_pct is not None:
-                    st.progress(artifact.compliance_pct / 100)
-                    st.caption(f"Compliance: {artifact.compliance_pct}%")
-                
-                # Actions
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.button("👁️ View", key=f"view_{artifact.id}", use_container_width=True)
-                with col_b:
-                    st.button("📥 Download", key=f"dl_{artifact.id}", use_container_width=True)
-
-
-# =============================================================================
-# PAGE: COMPLIANCE
-# =============================================================================
-
-def render_compliance_page() -> None:
-    """Render the compliance matrix page."""
-    render_page_header("Compliance Matrix", "Requirement tracking & evidence mapping", "🛡️")
-    
-    if st.session_state.demo_mode:
-        render_demo_mode_banner()
-    
-    # Deal selector
-    deals = get_deals()
-    deal_options = {d.id: d.name for d in deals}
-    selected_id = st.selectbox("Select Deal", options=list(deal_options.keys()), format_func=lambda x: deal_options[x])
-    
-    # Stats
-    stats = get_compliance_stats(selected_id)
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Total Requirements", stats["total"])
-    with col2:
-        st.metric("Addressed", stats["addressed"], delta=f"{stats['coverage_pct']}%")
-    with col3:
-        st.metric("Partial", stats["partial"])
-    with col4:
-        st.metric("Not Started", stats["not_started"])
-    
-    # Coverage bar
-    st.progress(stats["coverage_pct"] / 100 if stats["total"] > 0 else 0)
-    st.caption(f"Overall Compliance Coverage: {stats['coverage_pct']}%")
-    
-    st.divider()
-    
-    # Requirements table
-    requirements = get_requirements(selected_id)
-    
-    if not requirements:
-        render_empty_state("📭", "No requirements found", "Import requirements from your RFP")
-        return
-    
-    for req in requirements:
-        with st.container():
-            col1, col2, col3, col4, col5 = st.columns([1, 4, 1, 1, 1])
-            
-            with col1:
-                st.code(req.section)
-            
-            with col2:
-                st.write(req.text[:100] + "..." if len(req.text) > 100 else req.text)
-            
-            with col3:
-                type_color = "red" if req.req_type == RequirementType.SHALL else "orange" if req.req_type == RequirementType.SHOULD else "blue"
-                st.markdown(f":{type_color}[{req.req_type.value}]")
-            
-            with col4:
-                status_icon = "✅" if req.status == RequirementStatus.ADDRESSED else "🟡" if req.status == RequirementStatus.PARTIAL else "⬜"
-                st.write(f"{status_icon} {req.status.value.replace('_', ' ')}")
-            
-            with col5:
-                st.write(f"📎 {req.evidence_count}")
+                    label = f"**{bot.name}**" if is_active else bot.name
+                    if bot.is_private:
+                        label += " 🔒"
+                    
+                    if st.button(
+                        label,
+                        key=f"bot_select_{bot_id}",
+                        use_container_width=True,
+                        type="primary" if is_active else "secondary"
+                    ):
+                        st.session_state.selected_bot = bot_id
+                        st.session_state.messages = []  # Clear chat on bot switch
+                        st.session_state.prefill_prompt = None
+                        st.rerun()
             
             st.divider()
-
-
-# =============================================================================
-# PAGE: REVIEWS
-# =============================================================================
-
-def render_reviews_page() -> None:
-    """Render the reviews and issues page."""
-    render_page_header("Reviews & Issues", "Color team reviews and issue tracking", "👁️")
-    
-    if st.session_state.demo_mode:
-        render_demo_mode_banner()
-    
-    tab1, tab2 = st.tabs(["📋 Reviews", "⚠️ Issues"])
-    
-    with tab1:
-        reviews = get_reviews()
-        
-        if not reviews:
-            render_empty_state("📭", "No reviews scheduled")
-            return
-        
-        cols = st.columns(2)
-        for i, review in enumerate(reviews):
-            with cols[i % 2]:
-                # Color based on review type
-                color = REVIEW_COLORS.get(review.review_type.value, "#gray")
-                
-                st.markdown(f"""
-                    <div style="background: white; border: 1px solid {COLORS['border']}; border-radius: 12px; 
-                                padding: 1rem; margin-bottom: 1rem; border-left: 4px solid {color};">
-                        <div style="display: flex; justify-content: space-between;">
-                            <strong>{review.review_type.value} Team Review</strong>
-                            <span>{review.status.value.replace('_', ' ')}</span>
-                        </div>
-                        <div style="font-size: 0.875rem; color: {COLORS['text_secondary']};">
-                            {review.deal_name}
-                        </div>
-                    </div>
-                """, unsafe_allow_html=True)
-                
-                # Metrics
-                col_a, col_b, col_c = st.columns(3)
-                with col_a:
-                    st.metric("Findings", review.findings_count)
-                with col_b:
-                    st.metric("Critical", review.critical_count)
-                with col_c:
-                    st.metric("Resolved", review.resolved_count)
-                
-                st.caption(f"📅 {review.scheduled_date} · Lead: {review.lead}")
-                st.divider()
-    
-    with tab2:
-        issues = get_issues()
-        
-        if not issues:
-            render_empty_state("🎉", "No issues!", "All caught up")
-            return
-        
-        for issue in issues:
-            severity_icon = "🔴" if issue.severity == IssueSeverity.CRITICAL else "🟡" if issue.severity == IssueSeverity.MAJOR else "⚪"
-            status_icon = "✅" if issue.status == IssueStatus.RESOLVED else "🔄" if issue.status == IssueStatus.IN_PROGRESS else "⬜"
-            
-            with st.expander(f"{severity_icon} {issue.title}"):
-                st.write(issue.description)
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.caption(f"**Deal:** {issue.deal_name}")
-                with col2:
-                    st.caption(f"**Assignee:** {issue.assignee}")
-                with col3:
-                    st.caption(f"**Due:** {issue.due_date}")
-                
-                st.write(f"**Status:** {status_icon} {issue.status.value.replace('_', ' ')}")
-                
-                if issue.resolution:
-                    st.success(f"**Resolution:** {issue.resolution}")
-
-
-# =============================================================================
-# PAGE: PARTNERS
-# =============================================================================
-
-def render_partners_page() -> None:
-    """Render the partners management page."""
-    render_page_header("Partner Management", "Teaming agreements, workshare, and collaboration", "🤝")
-    
-    if st.session_state.demo_mode:
-        render_demo_mode_banner()
-    
-    # Actions
-    col1, col2 = st.columns([3, 1])
-    with col2:
-        if st.button("➕ Add Partner", type="primary"):
-            st.toast("Add partner form would open here")
-    
-    st.divider()
-    
-    partners = get_partners()
-    
-    if not partners:
-        render_empty_state("📭", "No partners added", "Add your first teaming partner")
-        return
-    
-    cols = st.columns(2)
-    for i, partner in enumerate(partners):
-        with cols[i % 2]:
-            # Risk color
-            risk_color = "green" if partner.risk_level == "LOW" else "orange" if partner.risk_level == "MEDIUM" else "red"
-            
-            with st.container():
-                st.markdown(f"""
-                    <div style="background: white; border: 1px solid {COLORS['border']}; border-radius: 12px; padding: 1rem; margin-bottom: 1rem;">
-                        <div style="display: flex; justify-content: space-between; align-items: start;">
-                            <div>
-                                <div style="font-weight: 600; font-size: 1.125rem;">{partner.name}</div>
-                                <div style="font-size: 0.75rem; color: {COLORS['text_secondary']}; margin-top: 0.25rem;">
-                                    {partner.partner_type.value.replace('_', ' ')} · {partner.status.value}
-                                </div>
-                            </div>
-                            <span style="color: {risk_color};">● {partner.risk_level} Risk</span>
-                        </div>
-                    </div>
-                """, unsafe_allow_html=True)
-                
-                # Workshare
-                st.progress(partner.workshare_pct / 100)
-                st.caption(f"Workshare: {partner.workshare_pct}%")
-                
-                # Details
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.caption(f"**TA Status:** {partner.ta_status.value.replace('_', ' ')}")
-                with col_b:
-                    st.caption(f"**Contact:** {partner.contact_name}")
-                
-                # Associated deals
-                st.caption(f"**Deals:** {', '.join(partner.deals)}")
-                
-                # Actions
-                col_x, col_y = st.columns(2)
-                with col_x:
-                    st.button("💬 Message", key=f"msg_{partner.id}", use_container_width=True)
-                with col_y:
-                    st.button("📋 View Portal", key=f"portal_{partner.id}", use_container_width=True)
-                
-                st.divider()
-
-
-# =============================================================================
-# PAGE: PLAYBOOK
-# =============================================================================
-
-def render_playbook_page() -> None:
-    """Render the playbook/learning engine page."""
-    render_page_header("Playbook", "Learning engine & golden examples", "📖")
-    
-    if st.session_state.demo_mode:
-        render_demo_mode_banner()
-    
-    # Category filter
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        categories = ["all", "WIN_THEME", "DISCRIMINATOR", "BOILERPLATE", "TEMPLATE", "BEST_PRACTICE"]
-        category_labels = {
-            "all": "All", "WIN_THEME": "Win Themes", "DISCRIMINATOR": "Discriminators",
-            "BOILERPLATE": "Boilerplate", "TEMPLATE": "Templates", "BEST_PRACTICE": "Best Practices"
-        }
-        
-        selected_category = st.radio(
-            "Category",
-            options=categories,
-            format_func=lambda x: category_labels[x],
-            horizontal=True,
-            label_visibility="collapsed",
-        )
-    
-    with col2:
-        if st.button("➕ Add Lesson", type="primary"):
-            st.toast("Add lesson form would open here")
-    
-    st.divider()
-    
-    lessons = get_playbook_lessons(selected_category if selected_category != "all" else None)
-    
-    if not lessons:
-        render_empty_state("📭", "No lessons found", "Add your first golden example")
-        return
-    
-    for lesson in lessons:
-        with st.expander(f"⭐ {lesson.title}"):
-            # Rating stars
-            stars = "⭐" * lesson.rating + "☆" * (5 - lesson.rating)
-            
-            col1, col2, col3 = st.columns([2, 1, 1])
-            with col1:
-                st.caption(f"**Category:** {lesson.category.value.replace('_', ' ')}")
-            with col2:
-                st.caption(f"**Uses:** {lesson.uses}")
-            with col3:
-                st.caption(f"**Rating:** {stars}")
-            
-            st.divider()
-            
-            st.markdown(lesson.content)
-            
-            st.divider()
-            
-            # Tags
-            st.caption(f"**Tags:** {', '.join(lesson.tags)}")
-            st.caption(f"**Source:** {lesson.source} · Last used: {lesson.last_used}")
             
             # Actions
-            col_a, col_b = st.columns(2)
-            with col_a:
-                st.button("📋 Use This", key=f"use_{lesson.id}", use_container_width=True)
-            with col_b:
-                st.button("✏️ Edit", key=f"edit_{lesson.id}", use_container_width=True)
-
-
-# =============================================================================
-# PAGE: AI CHAT
-# =============================================================================
-
-def render_chat_page() -> None:
-    """Render the AI chat page."""
-    render_page_header("AI Assistant", "Chat with AMANDA's AI assistants", "💬")
-    
-    if st.session_state.demo_mode:
-        render_demo_mode_banner()
-    
-    # Get current role and filter bots
-    current_role = st.session_state.user_role
-    role_config = ROLES.get(current_role)
-    
-    # Filter bots based on role permissions
-    available_bots = {}
-    for bot_id, bot in BOTS.items():
-        if bot.is_private:
-            # Private bot - only show if role is in allowed_roles
-            if current_role in bot.allowed_roles:
-                available_bots[bot_id] = bot
-        else:
-            # Public bot - show to everyone
-            available_bots[bot_id] = bot
-    
-    # Ensure selected bot is valid for current role
-    if st.session_state.selected_bot not in available_bots:
-        st.session_state.selected_bot = "general"
-    
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        bot_options = {k: f"{v.icon} {v.name}" for k, v in available_bots.items()}
+            if st.button("🗑️ Clear Chat", use_container_width=True):
+                st.session_state.messages = []
+                st.session_state.prefill_prompt = None
+                st.rerun()
         
-        # Find current index
-        bot_keys = list(bot_options.keys())
-        current_bot_index = bot_keys.index(st.session_state.selected_bot) if st.session_state.selected_bot in bot_keys else 0
-        
-        selected_bot = st.selectbox(
-            "Select Assistant",
-            options=bot_keys,
-            format_func=lambda x: bot_options[x],
-            index=current_bot_index,
-            key="bot_selector",
+        # =====================================================================
+        # DEMO SETTINGS
+        # =====================================================================
+        st.divider()
+        st.markdown("**⚙️ Demo Settings**")
+        new_role = st.selectbox(
+            "Switch Role",
+            options=list(ROLES.keys()),
+            index=list(ROLES.keys()).index(st.session_state.user_role),
+            format_func=lambda x: f"{ROLES[x]['name']} {'(Private Access)' if ROLES[x]['can_access_private'] else ''}"
         )
+        if new_role != st.session_state.user_role:
+            st.session_state.user_role = new_role
+            # If switching to a role without private access and currently viewing private bot
+            if not ROLES[new_role]["can_access_private"] and BOTS[st.session_state.selected_bot].is_private:
+                st.session_state.selected_bot = "proposal_writer"
+            # If switching to role without integration access and currently in integrations
+            if not ROLES[new_role].get("can_access_integrations", False) and st.session_state.current_view != "chat":
+                st.session_state.current_view = "chat"
+            st.rerun()
         
-        if selected_bot != st.session_state.selected_bot:
-            st.session_state.selected_bot = selected_bot
-            st.session_state.messages = []
-            st.rerun()
+        # Version info
+        st.divider()
+        st.caption("AMANDA™ Portal v7.3")
+        st.caption("Phase 1B: HubSpot Integration")
+
+
+# =============================================================================
+# ZERO STATE COMPONENT
+# =============================================================================
+
+def render_zero_state(bot: BotConfig) -> None:
+    """
+    Render the zero state UI for a bot with starter prompts.
     
-    with col2:
-        if st.button("🗑️ Clear Chat"):
-            st.session_state.messages = []
-            st.rerun()
-    
-    bot = BOTS[st.session_state.selected_bot]
-    
-    # Bot info with access level indicator
-    access_badge = '<span style="background: #FEE2E2; color: #991B1B; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; margin-left: 8px;">🔒 Private</span>' if bot.is_private else '<span style="background: #D1FAE5; color: #065F46; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; margin-left: 8px;">Public</span>'
-    
+    Args:
+        bot: The BotConfig for the currently selected bot
+    """
     st.markdown(f"""
-        <div style="background: {COLORS['surface']}; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
-            <strong>{bot.icon} {bot.name}</strong>
-            {access_badge}
-            <div style="font-size: 0.875rem; color: {COLORS['text_secondary']}; margin-top: 0.25rem;">
-                {bot.description}
-            </div>
-            <div style="font-size: 0.75rem; color: {COLORS['text_muted']}; margin-top: 0.5rem;">
-                Available to: {', '.join(bot.allowed_roles) if bot.is_private else 'All users'}
-            </div>
+        <div class="zero-state-container">
+            <div class="bot-icon-large">{bot.icon}</div>
+            <h2 class="bot-name">
+                {bot.name}
+                {'<span class="private-badge">🔒 Private</span>' if bot.is_private else ''}
+            </h2>
+            <p class="bot-tagline {bot.color}">{bot.tagline}</p>
+            <p class="bot-description">{bot.description}</p>
         </div>
     """, unsafe_allow_html=True)
     
-    # Chat history
+    # Quick Start label
+    st.markdown("""
+        <div class="quick-start-label">
+            <span>💬</span>
+            <span>Quick Start</span>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    # Starter prompt cards
+    for i, starter in enumerate(bot.starters):
+        # Create a container that looks like a card
+        with st.container():
+            col1, col2 = st.columns([11, 1])
+            
+            with col1:
+                if st.button(
+                    f"{starter.icon}  **{starter.title}**\n\n{starter.description}",
+                    key=f"starter_{bot.id}_{i}",
+                    use_container_width=True,
+                    type="secondary"
+                ):
+                    st.session_state.prefill_prompt = starter.prompt_template
+                    st.session_state.show_prompt_editor = True
+                    st.rerun()
+    
+    # Keyboard hint
+    st.markdown("""
+        <p class="keyboard-hint">Or just start typing in the chat box below...</p>
+    """, unsafe_allow_html=True)
+
+
+# =============================================================================
+# PROMPT EDITOR
+# =============================================================================
+
+def render_prompt_editor() -> Optional[str]:
+    """
+    Render the prompt editor when a starter is selected.
+    
+    Returns:
+        The final prompt to send, or None if cancelled
+    """
+    st.markdown("""
+        <div class="edit-prompt-label">
+            <span>✏️</span>
+            <span>Customize Your Prompt</span>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    edited_prompt = st.text_area(
+        "Edit the template below, then click Send:",
+        value=st.session_state.prefill_prompt,
+        height=180,
+        key="prompt_editor",
+        label_visibility="collapsed",
+        placeholder="Enter your prompt here..."
+    )
+    
+    col1, col2, col3 = st.columns([1, 1, 2])
+    
+    with col1:
+        if st.button("Cancel", use_container_width=True):
+            st.session_state.prefill_prompt = None
+            st.session_state.show_prompt_editor = False
+            st.rerun()
+    
+    with col2:
+        if st.button("Send →", type="primary", use_container_width=True):
+            st.session_state.prefill_prompt = None
+            st.session_state.show_prompt_editor = False
+            return edited_prompt
+    
+    return None
+
+
+# =============================================================================
+# CHAT INTERFACE
+# =============================================================================
+
+def render_chat_messages() -> None:
+    """Render all messages in the chat history."""
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-    
-    # Starter prompts (if no messages)
-    if not st.session_state.messages and bot.starters:
-        st.markdown("### Quick Start")
-        cols = st.columns(len(bot.starters))
-        for i, starter in enumerate(bot.starters):
-            with cols[i]:
-                if st.button(f"{starter.icon} {starter.title}", key=f"starter_{i}", use_container_width=True):
-                    if starter.prompt_template:
-                        st.session_state.prefill_prompt = starter.prompt_template
-                        st.session_state.show_prompt_editor = True
-                        st.rerun()
-    
-    # Prompt editor
-    if st.session_state.show_prompt_editor and st.session_state.prefill_prompt:
-        st.markdown("### ✏️ Customize Your Prompt")
-        edited_prompt = st.text_area(
-            "Edit the template:",
-            value=st.session_state.prefill_prompt,
-            height=150,
-            label_visibility="collapsed",
-        )
-        
-        col1, col2, col3 = st.columns([1, 1, 2])
-        with col1:
-            if st.button("Cancel"):
-                st.session_state.prefill_prompt = None
-                st.session_state.show_prompt_editor = False
-                st.rerun()
-        with col2:
-            if st.button("Send →", type="primary"):
-                st.session_state.messages.append({"role": "user", "content": edited_prompt})
-                st.session_state.prefill_prompt = None
-                st.session_state.show_prompt_editor = False
-                
-                # Get response
-                with st.chat_message("assistant"):
-                    response = get_ai_response(edited_prompt, bot)
-                    st.markdown(response)
-                
-                st.session_state.messages.append({"role": "assistant", "content": response})
-                st.rerun()
-    
-    # Chat input
-    if not st.session_state.show_prompt_editor:
-        user_input = st.chat_input(f"Message {bot.name}...")
-        
-        if user_input:
-            st.session_state.messages.append({"role": "user", "content": user_input})
-            
-            with st.chat_message("user"):
-                st.markdown(user_input)
-            
-            with st.chat_message("assistant"):
-                response = get_ai_response(user_input, bot)
-                st.markdown(response)
-            
-            st.session_state.messages.append({"role": "assistant", "content": response})
-            st.rerun()
 
 
-def get_ai_response(user_message: str, bot) -> str:
-    """Get AI response (demo or real API)."""
-    if st.session_state.demo_mode:
-        # Use demo engine
-        demo_engine = get_demo_engine()
-        response_parts = []
-        
-        with st.spinner("Thinking..."):
-            for chunk in demo_engine.get_demo_response(user_message, bot.id):
-                response_parts.append(chunk)
-        
-        return "".join(response_parts)
+def get_ai_response(user_message: str, bot: BotConfig) -> str:
+    """
+    Get a response from the Anthropic API.
     
-    else:
-        # Real API call - check Streamlit secrets first, then env var
-        api_key = st.secrets.get("ANTHROPIC_API_KEY") if hasattr(st, 'secrets') else None
-        if not api_key:
-            api_key = os.getenv("ANTHROPIC_API_KEY")
+    Args:
+        user_message: The user's message
+        bot: The current bot configuration
         
-        if not api_key:
-            return "⚠️ **API Key Not Configured**\n\nPlease set the `ANTHROPIC_API_KEY` environment variable or enable Demo Mode."
+    Returns:
+        The AI assistant's response
+    """
+    # Get API key from environment
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    
+    if not api_key:
+        return "⚠️ **API Key Not Configured**\n\nPlease set the `ANTHROPIC_API_KEY` environment variable to enable AI responses.\n\n```bash\nexport ANTHROPIC_API_KEY='your-key-here'\n```"
+    
+    try:
+        client = Anthropic(api_key=api_key)
         
-        try:
-            client = Anthropic(api_key=api_key)
-            
-            messages = [
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages
-            ]
-            messages.append({"role": "user", "content": user_message})
-            
+        # Build messages history
+        messages = [
+            {"role": m["role"], "content": m["content"]}
+            for m in st.session_state.messages
+        ]
+        messages.append({"role": "user", "content": user_message})
+        
+        # Stream the response
+        with st.chat_message("assistant"):
             response_placeholder = st.empty()
             full_response = ""
             
@@ -1070,348 +826,11 @@ def get_ai_response(user_message: str, bot) -> str:
                     response_placeholder.markdown(full_response + "▌")
             
             response_placeholder.markdown(full_response)
-            return full_response
-            
-        except Exception as e:
-            return f"⚠️ **Error communicating with AI**\n\n{str(e)}"
-
-
-# =============================================================================
-# PAGE: ADMIN
-# =============================================================================
-
-def render_admin_page() -> None:
-    """Render the admin settings page."""
-    render_page_header("Admin Settings", "User management, system configuration & demo controls", "⚙️")
-    
-    # Access check
-    role_config = ROLES.get(st.session_state.user_role)
-    if not role_config or not role_config.can_config_system:
-        st.error("🚫 Access Denied. Admin privileges required.")
-        return
-    
-    if st.session_state.demo_mode:
-        render_demo_mode_banner()
-    
-    tab1, tab2, tab3 = st.tabs(["👥 Users", "🎬 Demo Scenarios", "🔗 Integrations"])
-    
-    with tab1:
-        users = get_users()
         
-        col1, col2 = st.columns([3, 1])
-        with col2:
-            if st.button("➕ Add User", type="primary"):
-                st.toast("Add user form would open here")
+        return full_response
         
-        st.divider()
-        
-        for user in users:
-            col1, col2, col3, col4, col5 = st.columns([3, 1, 1, 1, 1])
-            
-            with col1:
-                st.markdown(f"**{user.name}**")
-                st.caption(user.email)
-            
-            with col2:
-                role = ROLES.get(user.role)
-                st.write(f"{role.icon if role else ''} {role.name if role else user.role}")
-            
-            with col3:
-                status_color = "🟢" if user.status == "ACTIVE" else "🔴"
-                st.write(f"{status_color} {user.status}")
-            
-            with col4:
-                st.caption(user.last_login)
-            
-            with col5:
-                st.button("✏️", key=f"edit_user_{user.id}")
-            
-            st.divider()
-    
-    with tab2:
-        st.markdown("### 🎬 Demo Scenarios")
-        st.info("Run pre-configured scenarios to demonstrate AMANDA's capabilities without using API credits.")
-        
-        demo_engine = get_demo_engine()
-        scenarios = demo_engine.get_scenarios()
-        
-        cols = st.columns(3)
-        for i, scenario in enumerate(scenarios):
-            with cols[i % 3]:
-                with st.container():
-                    st.markdown(f"""
-                        <div style="background: {COLORS['surface']}; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
-                            <strong>{scenario.name}</strong>
-                            <div style="font-size: 0.875rem; color: {COLORS['text_secondary']}; margin-top: 0.5rem;">
-                                {scenario.description}
-                            </div>
-                            <div style="font-size: 0.75rem; color: {COLORS['text_muted']}; margin-top: 0.5rem;">
-                                {len(scenario.interactions)} interactions
-                            </div>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    
-                    if st.button("▶️ Run", key=f"run_{scenario.id}", use_container_width=True):
-                        demo_engine.enable_demo_mode()
-                        first_interaction = demo_engine.start_scenario(scenario.id)
-                        
-                        if first_interaction:
-                            st.session_state.selected_bot = scenario.bot_id
-                            st.session_state.messages = []
-                            st.session_state.demo_mode = True
-                            st.session_state.current_page = "chat"
-                            st.session_state.prefill_prompt = first_interaction["user"]
-                            st.session_state.show_prompt_editor = True
-                            st.rerun()
-    
-    with tab3:
-        st.markdown("### 🔗 Integrations")
-        
-        integrations = [
-            {"name": "SharePoint", "icon": "📁", "status": "Connected", "last_sync": "2 min ago"},
-            {"name": "HubSpot CRM", "icon": "🔶", "status": "Connected", "last_sync": "5 min ago"},
-            {"name": "Azure AD (SSO)", "icon": "🔐", "status": "Connected", "last_sync": "Active"},
-            {"name": "Anthropic API", "icon": "🤖", "status": "Connected" if (st.secrets.get("ANTHROPIC_API_KEY") if hasattr(st, 'secrets') else None) or os.getenv("ANTHROPIC_API_KEY") else "Not Configured", "last_sync": "claude-sonnet-4-20250514"},
-        ]
-        
-        cols = st.columns(2)
-        for i, integration in enumerate(integrations):
-            with cols[i % 2]:
-                status_color = "🟢" if integration["status"] == "Connected" else "🔴"
-                
-                st.markdown(f"""
-                    <div style="background: white; border: 1px solid {COLORS['border']}; border-radius: 12px; padding: 1rem; margin-bottom: 1rem;">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div>
-                                <span style="font-size: 1.5rem;">{integration['icon']}</span>
-                                <strong style="margin-left: 8px;">{integration['name']}</strong>
-                            </div>
-                            <span>{status_color} {integration['status']}</span>
-                        </div>
-                        <div style="font-size: 0.75rem; color: {COLORS['text_secondary']}; margin-top: 0.5rem;">
-                            {integration['last_sync']}
-                        </div>
-                    </div>
-                """, unsafe_allow_html=True)
-                
-                st.button("⚙️ Configure", key=f"config_{integration['name']}", use_container_width=True)
-
-
-# =============================================================================
-# ONBOARDING TOUR SYSTEM
-# =============================================================================
-
-def render_tour_welcome_prompt() -> None:
-    """Show initial welcome prompt asking if user wants a tour."""
-    if not st.session_state.show_tour_prompt:
-        return
-    
-    st.markdown("""
-        <style>
-        .tour-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0,0,0,0.5);
-            z-index: 9998;
-        }
-        .tour-modal {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: white;
-            padding: 2rem;
-            border-radius: 16px;
-            box-shadow: 0 25px 50px rgba(0,0,0,0.25);
-            z-index: 9999;
-            max-width: 500px;
-            width: 90%;
-        }
-        .tour-modal h2 {
-            margin: 0 0 1rem 0;
-            color: #1E293B;
-        }
-        .tour-modal p {
-            color: #64748B;
-            line-height: 1.6;
-        }
-        </style>
-    """, unsafe_allow_html=True)
-    
-    # Modal container
-    modal = st.container()
-    with modal:
-        st.markdown("---")
-        st.markdown(f"""
-        ### 👋 Welcome to AMANDA™!
-        
-        This appears to be your first visit. Would you like a quick guided tour?
-        
-        **The tour covers:**
-        - Dashboard overview
-        - AI Chat assistants  
-        - Deals pipeline
-        - Demo Mode features
-        - Role-based permissions
-        
-        *Takes about 2 minutes*
-        """)
-        
-        col1, col2, col3 = st.columns([1, 1, 1])
-        
-        with col1:
-            if st.button("✅ Yes, show me around!", type="primary", use_container_width=True):
-                st.session_state.show_tour_prompt = False
-                st.session_state.tour_active = True
-                st.session_state.tour_step = 0
-                st.rerun()
-        
-        with col2:
-            if st.button("⏭️ Skip for now", use_container_width=True):
-                st.session_state.show_tour_prompt = False
-                st.rerun()
-        
-        with col3:
-            if st.button("🚫 Don't show again", use_container_width=True):
-                st.session_state.show_tour_prompt = False
-                st.session_state.tour_completed = True
-                st.rerun()
-        
-        st.markdown("---")
-
-
-def render_tour_modal() -> None:
-    """Render the current tour step as a modal dialog."""
-    if not st.session_state.tour_active:
-        return
-    
-    tour = get_general_tour()
-    current_step = st.session_state.tour_step
-    
-    if current_step >= len(tour):
-        st.session_state.tour_active = False
-        st.session_state.tour_completed = True
-        st.rerun()
-        return
-    
-    step = tour[current_step]
-    total_steps = len(tour)
-    progress = (current_step + 1) / total_steps
-    
-    # Tour modal
-    st.markdown("---")
-    
-    # Progress indicator
-    st.progress(progress)
-    st.caption(f"Step {current_step + 1} of {total_steps}")
-    
-    # Step content
-    st.markdown(f"### {step.title}")
-    st.markdown(step.content)
-    
-    # Tip box
-    if step.tip:
-        st.info(f"💡 **Tip:** {step.tip}")
-    
-    # Navigation buttons
-    col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
-    
-    with col1:
-        if current_step > 0:
-            if st.button("← Previous", use_container_width=True):
-                st.session_state.tour_step -= 1
-                st.rerun()
-    
-    with col2:
-        # Go to related page button
-        if step.page != "dashboard" and step.page != st.session_state.current_page:
-            if st.button(f"📍 Go to {step.page.title()}", use_container_width=True):
-                st.session_state.current_page = step.page
-                st.rerun()
-    
-    with col3:
-        if current_step < total_steps - 1:
-            if st.button("Next →", type="primary", use_container_width=True):
-                st.session_state.tour_step += 1
-                st.rerun()
-        else:
-            if st.button("✅ Finish Tour", type="primary", use_container_width=True):
-                st.session_state.tour_active = False
-                st.session_state.tour_completed = True
-                st.rerun()
-    
-    with col4:
-        if st.button("✖ Exit Tour", use_container_width=True):
-            st.session_state.tour_active = False
-            st.rerun()
-    
-    st.markdown("---")
-
-
-def render_role_tour_modal() -> None:
-    """Render role-specific tour steps."""
-    if not st.session_state.role_tour_active:
-        return
-    
-    tour = get_tour_for_role(st.session_state.user_role)
-    current_step = st.session_state.role_tour_step
-    
-    if current_step >= len(tour):
-        st.session_state.role_tour_active = False
-        st.rerun()
-        return
-    
-    step = tour[current_step]
-    total_steps = len(tour)
-    progress = (current_step + 1) / total_steps
-    
-    role_config = ROLES.get(st.session_state.user_role)
-    role_name = role_config.name if role_config else "User"
-    
-    # Tour modal
-    st.markdown("---")
-    st.markdown(f"**🎯 {role_name} Tour**")
-    
-    # Progress indicator
-    st.progress(progress)
-    st.caption(f"Step {current_step + 1} of {total_steps}")
-    
-    # Step content
-    st.markdown(f"### {step.title}")
-    st.markdown(step.content)
-    
-    # Tip box
-    if step.tip:
-        st.info(f"💡 **Tip:** {step.tip}")
-    
-    # Navigation buttons
-    col1, col2, col3 = st.columns([1, 1, 1])
-    
-    with col1:
-        if current_step > 0:
-            if st.button("← Back", key="role_prev", use_container_width=True):
-                st.session_state.role_tour_step -= 1
-                st.rerun()
-    
-    with col2:
-        if current_step < total_steps - 1:
-            if st.button("Continue →", key="role_next", type="primary", use_container_width=True):
-                st.session_state.role_tour_step += 1
-                st.rerun()
-        else:
-            if st.button("✅ Done", key="role_done", type="primary", use_container_width=True):
-                st.session_state.role_tour_active = False
-                st.rerun()
-    
-    with col3:
-        if st.button("✖ Skip", key="role_skip", use_container_width=True):
-            st.session_state.role_tour_active = False
-            st.rerun()
-    
-    st.markdown("---")
+    except Exception as e:
+        return f"⚠️ **Error communicating with AI**\n\n{str(e)}"
 
 
 # =============================================================================
@@ -1420,47 +839,77 @@ def render_role_tour_modal() -> None:
 
 def main() -> None:
     """Main application entry point."""
-    inject_custom_css()
+    configure_page()
     init_session_state()
     render_sidebar()
     
-    # Show welcome tour prompt for first-time visitors
-    if st.session_state.show_tour_prompt and st.session_state.demo_mode:
-        render_tour_welcome_prompt()
+    # =========================================================================
+    # VIEW ROUTER
+    # =========================================================================
     
-    # Show active tour modal
-    if st.session_state.tour_active:
-        render_tour_modal()
+    # HubSpot Dashboard View
+    if st.session_state.current_view == "hubspot":
+        user_can_access_integrations = ROLES[st.session_state.user_role].get("can_access_integrations", False)
+        if user_can_access_integrations:
+            render_hubspot_dashboard()
+        else:
+            st.error("🚫 You don't have access to integrations.")
+            st.info("Contact your admin to request access.")
+        return
     
-    # Show role-specific tour modal
-    if st.session_state.role_tour_active:
-        render_role_tour_modal()
+    # =========================================================================
+    # CHAT VIEW (Default)
+    # =========================================================================
     
-    # Route to appropriate page
-    page = st.session_state.current_page
+    # Get current bot
+    current_bot = BOTS[st.session_state.selected_bot]
     
-    if page == "dashboard":
-        render_dashboard_page()
-    elif page == "deals":
-        render_deals_page()
-    elif page == "workflows":
-        render_workflows_page()
-    elif page == "artifacts":
-        render_artifacts_page()
-    elif page == "compliance":
-        render_compliance_page()
-    elif page == "reviews":
-        render_reviews_page()
-    elif page == "partners":
-        render_partners_page()
-    elif page == "playbook":
-        render_playbook_page()
-    elif page == "chat":
-        render_chat_page()
-    elif page == "admin":
-        render_admin_page()
+    # Check access
+    user_can_access_private = ROLES[st.session_state.user_role]["can_access_private"]
+    if current_bot.is_private and not user_can_access_private:
+        st.error("🚫 You don't have access to this assistant.")
+        st.info("Contact your admin to request access to private assistants.")
+        return
+    
+    # Main content area
+    if st.session_state.show_prompt_editor and st.session_state.prefill_prompt:
+        # Show prompt editor
+        sent_prompt = render_prompt_editor()
+        if sent_prompt:
+            # Process the edited prompt
+            st.session_state.messages.append({"role": "user", "content": sent_prompt})
+            response = get_ai_response(sent_prompt, current_bot)
+            st.session_state.messages.append({"role": "assistant", "content": response})
+            st.rerun()
+    
+    elif len(st.session_state.messages) == 0:
+        # Show zero state
+        render_zero_state(current_bot)
+    
     else:
-        render_dashboard_page()
+        # Show chat history
+        render_chat_messages()
+    
+    # Chat input (always visible at bottom)
+    if not st.session_state.show_prompt_editor:
+        user_input = st.chat_input(
+            placeholder=f"Message {current_bot.name}...",
+            key="chat_input"
+        )
+        
+        if user_input:
+            # Add user message
+            st.session_state.messages.append({"role": "user", "content": user_input})
+            
+            # Display user message
+            with st.chat_message("user"):
+                st.markdown(user_input)
+            
+            # Get and display AI response
+            response = get_ai_response(user_input, current_bot)
+            st.session_state.messages.append({"role": "assistant", "content": response})
+            
+            st.rerun()
 
 
 if __name__ == "__main__":
