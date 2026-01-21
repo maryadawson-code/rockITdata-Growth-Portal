@@ -42,6 +42,23 @@ try:
 except ImportError:
     DATABASE_AVAILABLE = False
 
+try:
+    from ultra_delight import (
+        init_ultra_delight, 
+        render_visor, 
+        show_toast, 
+        trigger_celebration,
+        check_pending_celebration,
+        render_progress_ring,
+        render_animated_metric,
+        show_ultra_delight_demo,
+        set_visor_status,
+        get_visor_status
+    )
+    ULTRA_DELIGHT_AVAILABLE = True
+except ImportError:
+    ULTRA_DELIGHT_AVAILABLE = False
+
 
 # =============================================================================
 # CONFIGURATION
@@ -653,6 +670,10 @@ def configure_page() -> None:
             }}
         </style>
     """, unsafe_allow_html=True)
+    
+    # Initialize Ultra-Delight animations
+    if ULTRA_DELIGHT_AVAILABLE:
+        init_ultra_delight()
 
 
 # =============================================================================
@@ -668,7 +689,9 @@ def init_session_state() -> None:
         "user_name": "Mary",
         "prefill_prompt": None,
         "show_prompt_editor": False,
-        "current_view": "chat",  # chat, pipeline, admin, hubspot
+        "current_view": "chat",  # chat, pipeline, admin, hubspot, delight_demo
+        "visor_status": "idle",  # Ultra-Delight: idle, thinking, success, warning, error, celebrating
+        "celebration_pending": None,  # Ultra-Delight: celebration data
     }
     
     for key, value in defaults.items():
@@ -683,7 +706,7 @@ def init_session_state() -> None:
 def render_sidebar() -> None:
     """Render the sidebar with navigation, bot selector, and user info."""
     with st.sidebar:
-        # Header
+        # Header with Visor
         st.markdown(f"""
             <div class="portal-header">
                 <div class="portal-logo">🚀</div>
@@ -692,8 +715,15 @@ def render_sidebar() -> None:
                 </div>
                 <span class="portal-badge">AI Portal</span>
             </div>
-            <span class="version-badge">v7.3</span>
         """, unsafe_allow_html=True)
+        
+        # Version badge and Visor status in same row
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.markdown('<span class="version-badge">v7.3</span>', unsafe_allow_html=True)
+        with col2:
+            if ULTRA_DELIGHT_AVAILABLE:
+                render_visor(st.session_state.get("visor_status", "idle"), show_label=False)
         
         # User info
         st.markdown(f"**👤 {st.session_state.user_name}** · {ROLES[st.session_state.user_role]['name']}")
@@ -761,6 +791,18 @@ def render_sidebar() -> None:
                     type="primary" if admin_active else "secondary"
                 ):
                     st.session_state.current_view = "admin"
+                    st.rerun()
+            
+            # Ultra-Delight Demo (Admin only)
+            if ULTRA_DELIGHT_AVAILABLE:
+                delight_active = st.session_state.current_view == "delight_demo"
+                if st.button(
+                    "✨ Ultra-Delight Demo",
+                    key="nav_delight",
+                    use_container_width=True,
+                    type="primary" if delight_active else "secondary"
+                ):
+                    st.session_state.current_view = "delight_demo"
                     st.rerun()
         
         # =============================================================
@@ -920,9 +962,15 @@ def get_ai_response(user_message: str, bot: BotConfig) -> str:
     api_key = os.getenv("ANTHROPIC_API_KEY")
     
     if not api_key:
+        if ULTRA_DELIGHT_AVAILABLE:
+            st.session_state.visor_status = "error"
         return "⚠️ **API Key Not Configured**\n\nPlease set the `ANTHROPIC_API_KEY` environment variable.\n\n---\n*AI GENERATED - REQUIRES HUMAN REVIEW*"
     
     try:
+        # Set visor to thinking
+        if ULTRA_DELIGHT_AVAILABLE:
+            st.session_state.visor_status = "thinking"
+        
         client = Anthropic(api_key=api_key)
         
         # Build messages history
@@ -949,6 +997,10 @@ def get_ai_response(user_message: str, bot: BotConfig) -> str:
             
             response_placeholder.markdown(full_response)
         
+        # Set visor to success
+        if ULTRA_DELIGHT_AVAILABLE:
+            st.session_state.visor_status = "success"
+        
         # Track token usage if database available
         if DATABASE_AVAILABLE:
             try:
@@ -963,6 +1015,8 @@ def get_ai_response(user_message: str, bot: BotConfig) -> str:
         return full_response
         
     except Exception as e:
+        if ULTRA_DELIGHT_AVAILABLE:
+            st.session_state.visor_status = "error"
         return f"⚠️ **Error communicating with AI**\n\n{str(e)}\n\n---\n*AI GENERATED - REQUIRES HUMAN REVIEW*"
 
 
@@ -999,6 +1053,19 @@ def main() -> None:
     if current_view == "hubspot" and HUBSPOT_AVAILABLE:
         show_hubspot_dashboard()
         return
+    
+    # =============================================================
+    # ULTRA-DELIGHT DEMO
+    # =============================================================
+    if current_view == "delight_demo" and ULTRA_DELIGHT_AVAILABLE:
+        show_ultra_delight_demo()
+        return
+    
+    # =============================================================
+    # CHECK FOR PENDING CELEBRATIONS
+    # =============================================================
+    if ULTRA_DELIGHT_AVAILABLE:
+        check_pending_celebration()
     
     # =============================================================
     # CHAT VIEW (default)
